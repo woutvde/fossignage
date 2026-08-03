@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signage Operator Console</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            background-color: #0f172a; 
+            color: #f8fafc;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            margin: 0; 
+            padding: 24px; 
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* Top Bar */
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #1e293b;
+            padding: 16px 24px;
+            border-radius: 12px;
+            border: 1px solid #334155;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .top-bar h1 { margin: 0; font-size: 20px; color: #38bdf8; font-weight: 700; }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 340px minmax(0, 1fr);
+            gap: 20px;
+            width: 100%;
+        }
+        /* Stack vertically on half-screen or narrow viewports */
+        @media (max-width: 1150px) { 
+            .dashboard-grid { 
+                grid-template-columns: 1fr; 
+            } 
+        }
+
+        .panel {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+            min-width: 0; /* Critical: Allows grid items to shrink without clipping children */
+        }
+        .panel h2 { 
+            margin: 0; 
+            font-size: 16px; 
+            color: #f8fafc; 
+            border-bottom: 1px solid #334155; 
+            padding-bottom: 12px; 
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        /* Form Inputs & Buttons */
+        input, select, button {
+            font-family: inherit;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 13px;
+        }
+        input[type="text"], input[type="url"], input[type="number"], select {
+            width: 100%;
+            padding: 9px 12px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #f8fafc;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus, select:focus { border-color: #38bdf8; }
+
+        .btn {
+            padding: 8px 14px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .btn:hover:not(:disabled) { opacity: 0.9; }
+        .btn:active:not(:disabled) { transform: scale(0.98); }
+        
+        /* Disabled Button State */
+        .btn:disabled {
+            background: #334155 !important;
+            color: #64748b !important;
+            cursor: not-allowed;
+            opacity: 0.6;
+            box-shadow: none !important;
+            transform: none !important;
+        }
+
+        .btn-primary { background: #0284c7; color: white; }
+        .btn-success { background: #10b981; color: white; }
+        .btn-orange { background: #f97316; color: white; }
+        .btn-danger { background: #ef4444; color: white; padding: 5px 8px; font-size: 11px; }
+
+        /* Save Button Highlight when Unsaved Changes exist */
+        .btn-orange.dirty {
+            background: #eab308;
+            color: #000;
+            box-shadow: 0 0 12px rgba(234, 179, 8, 0.5);
+        }
+
+        /* Unsaved Changes Badge */
+        .unsaved-badge {
+            background: #f59e0b;
+            color: #000;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 12px;
+            display: none;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* Display Cards & Pulse Indicators */
+        .display-card {
+            background: #0f172a;
+            border: 1px solid #334155;
+            padding: 14px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .display-header { display: flex; justify-content: space-between; align-items: center; }
+        
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #10b981;
+            box-shadow: 0 0 8px #10b981;
+            display: inline-block;
+        }
+        .pulse-dot.offline {
+            background-color: #ef4444;
+            box-shadow: 0 0 8px #ef4444;
+        }
+
+        /* Playlist Editor Section */
+        .playlist-header-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        .playlist-header-row > div {
+            flex: 1 1 200px;
+        }
+        .playlist-header-row > .action-btns {
+            flex: 0 0 auto;
+            display: flex;
+            gap: 8px;
+        }
+
+        /* Timeline Track */
+        .timeline-container {
+            display: flex;
+            gap: 10px;
+            overflow-x: auto;
+            padding: 8px 4px 14px 4px;
+            min-height: 135px;
+            align-items: center;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            width: 100%;
+            min-width: 0;
+        }
+        .timeline-container::-webkit-scrollbar { height: 6px; }
+        .timeline-container::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+        .timeline-slot {
+            width: 105px;
+            height: 110px;
+            background: #1e293b;
+            border: 1px dashed #334155;
+            border-radius: 8px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            user-select: none;
+            transition: border-color 0.2s;
+        }
+        .timeline-slot.filled { border: 1px solid #38bdf8; background: #0f172a; }
+
+        .slot-thumb {
+            flex: 1;
+            width: 100%;
+            border-top-left-radius: 7px;
+            border-top-right-radius: 7px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+        .slot-thumb img, .slot-thumb video { width: 100%; height: 100%; object-fit: cover; }
+
+        .slot-controls {
+            height: 30px;
+            background: #1e293b;
+            border-bottom-left-radius: 7px;
+            border-bottom-right-radius: 7px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 6px;
+            border-top: 1px solid #334155;
+        }
+        .time-btn {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            border: none;
+            background: #334155;
+            color: #f8fafc;
+            font-size: 11px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .time-btn:hover:not(:disabled) { background: #38bdf8; color: #000; }
+        .time-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .time-val { font-size: 11px; font-weight: bold; color: #38bdf8; font-family: monospace; }
+
+        .btn-remove-slot {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            width: 18px;
+            height: 18px;
+            background: #ef4444;
+            color: white;
+            border-radius: 50%;
+            border: none;
+            font-size: 10px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 5;
+        }
+        .timeline-slot.filled:hover .btn-remove-slot { display: flex; }
+
+        /* Media Library Grid */
+        .library-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+        .tab-btn {
+            background: #0f172a;
+            color: #94a3b8;
+            border: 1px solid #334155;
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .tab-btn.active { background: #0284c7; color: white; border-color: #0284c7; }
+
+        .library-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 10px;
+            max-height: 240px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+        .media-card {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            overflow: hidden;
+            height: 100px;
+            display: flex;
+            flex-direction: column;
+            cursor: grab;
+            transition: transform 0.15s, border-color 0.15s;
+        }
+        .media-card:hover { transform: translateY(-2px); border-color: #38bdf8; }
+
+        .media-preview {
+            flex: 1;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .media-preview img, .media-preview video { width: 100%; height: 100%; object-fit: cover; }
+        .media-title {
+            padding: 4px 6px;
+            font-size: 11px;
+            color: #cbd5e1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            background: #1e293b;
+            border-top: 1px solid #334155;
+        }
+
+        .empty-state {
+            color: #64748b; 
+            font-size: 13px; 
+            text-align: center; 
+            padding: 20px 10px;
+            border: 1px dashed #334155;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Top Header Bar -->
+    <div class="top-bar">
+        <h1>Digital Signage Operator Console</h1>
+        <div style="font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 8px;">
+            <span class="pulse-dot"></span>
+            Backend Connected
+        </div>
+    </div>
+
+    <!-- Main Workspace -->
+    <div class="dashboard-grid">
+
+        <!-- LEFT PANEL: DISPLAY MANAGEMENT -->
+        <div class="panel">
+            <h2>
+                <span>Active Displays</span>
+                <span id="displayCountBadge" style="background:#334155; color:#38bdf8; font-size:11px; padding:2px 8px; border-radius:12px;">0 Online</span>
+            </h2>
+
+            <!-- Pair Display Form -->
+            <div style="display: flex; gap: 8px;">
+                <input type="text" id="playerCodeInput" placeholder="4-Letter Code" maxlength="4" style="text-transform: uppercase; letter-spacing: 2px; font-weight: bold; font-family: monospace;">
+                <button class="btn btn-primary" onclick="linkPlayer()">Pair Screen</button>
+            </div>
+
+            <!-- Linked Displays List -->
+            <div id="displaysList" style="display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: 540px;">
+                <!-- Populated dynamically -->
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL: PLAYLIST EDITOR & MEDIA LIBRARY -->
+        <div style="display: flex; flex-direction: column; gap: 20px; min-width: 0;">
+
+            <!-- PLAYLIST EDITOR -->
+            <div class="panel">
+                <h2>
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span>Playlist Editor</span>
+                        <span id="unsavedBadge" class="unsaved-badge">● Unsaved Changes</span>
+                    </div>
+                    <span style="font-size: 13px; color: #94a3b8; font-weight: normal;">
+                        Total duration: <strong id="totalDurationLabel" style="color: #38bdf8; font-family: monospace;">0:00:00</strong>
+                    </span>
+                </h2>
+
+                <!-- Playlist Selector & Info -->
+                <div class="playlist-header-row">
+                    <div>
+                        <label style="font-size: 11px; color: #94a3b8; display: block; margin-bottom: 4px;">Select Playlist to Edit:</label>
+                        <select id="playlistSelect" onchange="onPlaylistDropdownChange(this.value)">
+                            <!-- Populated dynamically -->
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-size: 11px; color: #94a3b8; display: block; margin-bottom: 4px;">Playlist Name:</label>
+                        <input type="text" id="playlistNameInput" placeholder="Main Entrance Playlist" value="New Playlist" oninput="markDirty()">
+                    </div>
+                    <div class="action-btns">
+                        <button class="btn btn-orange" id="savePlaylistBtn" onclick="saveActivePlaylist()" disabled>Save Playlist</button>
+                        <button class="btn btn-danger" id="deletePlaylistBtn" onclick="deleteCurrentPlaylist()" style="display:none;">Delete</button>
+                    </div>
+                </div>
+
+                <!-- Timeline Sequence Track -->
+                <div>
+                    <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">
+                        Playlist Track (Drag media here or reorder items):
+                    </label>
+                    <div class="timeline-container" id="timelineTrack" 
+                         ondragover="event.preventDefault()" 
+                         ondrop="handleTrackDrop(event)">
+                        <!-- Dynamic timeline slots render here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- MEDIA LIBRARY -->
+            <div class="panel">
+                <h2>
+                    <span>Media Library</span>
+                    <button class="btn btn-success" onclick="document.getElementById('fileUploadInput').click()">+ Upload File</button>
+                    <input type="file" id="fileUploadInput" style="display:none;" onchange="handleFileUpload(event)">
+                </h2>
+
+                <!-- Add URL Row -->
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <input type="text" id="mediaNameInput" placeholder="Media Title (e.g. Daily Promo)" style="flex: 1; min-width: 140px;">
+                    <input type="url" id="mediaUrlInput" placeholder="https://example.com/banner.jpg" style="flex: 2; min-width: 180px;">
+                    <button class="btn btn-primary" onclick="addUrlMedia()">Add URL</button>
+                </div>
+
+                <!-- Category Tabs & Search -->
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <div class="library-tabs">
+                        <button class="tab-btn active" onclick="filterLibrary('all', this)">All Media</button>
+                        <button class="tab-btn" onclick="filterLibrary('image', this)">Images</button>
+                        <button class="tab-btn" onclick="filterLibrary('video', this)">Videos</button>
+                        <button class="tab-btn" onclick="filterLibrary('url', this)">Web Pages</button>
+                    </div>
+                    <input type="text" id="searchLibrary" placeholder="Search..." oninput="renderLibrary()" style="width: 180px; padding: 5px 10px;">
+                </div>
+
+                <!-- Media Grid -->
+                <div class="library-grid" id="libraryGrid">
+                    <!-- Media cards render here -->
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        let state = { displays: [], media: [], playlists: [] };
+        let activePlaylistId = 'new';
+        let activePlaylistItems = [];
+        let currentFilter = 'all';
+        
+        let isDirty = false;
+        let isInitialLoad = true;
+        let lastMediaHash = "";
+        let lastPlaylistsHash = "";
+
+        // Warn user before leaving page with unsaved changes
+        window.addEventListener('beforeunload', (e) => {
+            if (isDirty) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+
+        /* --- UNSAVED CHANGES TRACKER --- */
+        function markDirty() {
+            isDirty = true;
+            updateUnsavedUI();
+        }
+
+        function clearDirty() {
+            isDirty = false;
+            updateUnsavedUI();
+        }
+
+        function updateUnsavedUI() {
+            const badge = document.getElementById('unsavedBadge');
+            const saveBtn = document.getElementById('savePlaylistBtn');
+            if (isDirty) {
+                badge.style.display = 'inline-flex';
+                saveBtn.disabled = false;
+                saveBtn.classList.add('dirty');
+                saveBtn.innerText = 'Save Changes *';
+            } else {
+                badge.style.display = 'none';
+                saveBtn.disabled = true;
+                saveBtn.classList.remove('dirty');
+                saveBtn.innerText = 'Save Playlist';
+            }
+        }
+
+        async function fetchState() {
+            try {
+                const res = await fetch('/api/state');
+                state = await res.json();
+
+                for (let m of state.media) {
+                    if (m.type === 'video' && !m.duration) {
+                        m.duration = await detectVideoDuration(m.url);
+                    }
+                }
+
+                if (isInitialLoad) {
+                    if (state.playlists.length > 0) {
+                        loadPlaylist(state.playlists[0].id);
+                    } else {
+                        loadPlaylist('new');
+                    }
+                    isInitialLoad = false;
+                }
+
+                renderDisplays();
+                renderPlaylistDropdown();
+
+                // Prevent Video Flashing: Only re-render Library if media state actually changes
+                const currentMediaHash = JSON.stringify(state.media);
+                if (currentMediaHash !== lastMediaHash) {
+                    lastMediaHash = currentMediaHash;
+                    renderLibrary();
+                }
+
+                // Only reload track from state if playlist collection updated externally AND local edits are saved
+                const currentPlaylistsHash = JSON.stringify(state.playlists);
+                if (currentPlaylistsHash !== lastPlaylistsHash) {
+                    lastPlaylistsHash = currentPlaylistsHash;
+                    if (!isDirty && activePlaylistId !== 'new') {
+                        const current = state.playlists.find(p => p.id === activePlaylistId);
+                        if (current) {
+                            activePlaylistItems = [...(current.items || [])];
+                            renderTimeline();
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('State sync error:', err);
+            }
+        }
+
+        function detectVideoDuration(url) {
+            return new Promise((resolve) => {
+                const tempVid = document.createElement('video');
+                tempVid.preload = 'metadata';
+                tempVid.src = url;
+                tempVid.onloadedmetadata = () => {
+                    const sec = Math.round(tempVid.duration);
+                    resolve(sec > 0 ? sec : 10);
+                };
+                tempVid.onerror = () => resolve(10);
+            });
+        }
+
+        /* --- DISPLAY MANAGEMENT --- */
+        async function linkPlayer() {
+            const rawCode = document.getElementById('playerCodeInput').value.trim().toUpperCase();
+            if (!rawCode) return alert('Enter a 4-character screen code.');
+
+            const res = await fetch('/api/link_display', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: rawCode })
+            });
+
+            const data = await res.json();
+            if (!data.success) return alert(data.message);
+
+            document.getElementById('playerCodeInput').value = '';
+            fetchState();
+        }
+
+        async function unlinkPlayer(code) {
+            await fetch('/api/unlink_display', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code })
+            });
+            fetchState();
+        }
+
+        async function assignPlaylistToDisplay(code, playlistId) {
+            await fetch('/api/activate_playlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, playlist_id: playlistId })
+            });
+            fetchState();
+        }
+
+        function renderDisplays() {
+            const container = document.getElementById('displaysList');
+            
+            const linkedDisplays = state.displays.filter(d => d.linked);
+            const onlineCount = linkedDisplays.filter(d => d.online !== false && d.status !== 'offline').length;
+            
+            document.getElementById('displayCountBadge').innerText = `${onlineCount} Online`;
+
+            if (linkedDisplays.length === 0) {
+                container.innerHTML = `<div class="empty-state">No displays linked.<br>Open <strong>/display</strong> on a screen to get a pairing code.</div>`;
+                return;
+            }
+
+            container.innerHTML = linkedDisplays.map(d => {
+                const isOnline = d.online !== false && d.status !== 'offline';
+                return `
+                    <div class="display-card">
+                        <div class="display-header">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span class="pulse-dot ${isOnline ? '' : 'offline'}"></span>
+                                <strong style="color:#38bdf8; font-family:monospace; font-size:18px;">${d.code}</strong>
+                                <span style="font-size:11px; color:${isOnline ? '#34d399' : '#ef4444'}; font-weight:600;">
+                                    ${isOnline ? 'ONLINE' : 'OFFLINE'}
+                                </span>
+                            </div>
+                            <button class="btn btn-danger" onclick="unlinkPlayer('${d.code}')">Unlink</button>
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:#94a3b8; display:block; margin-bottom:4px;">Active Playlist:</label>
+                            <select onchange="assignPlaylistToDisplay('${d.code}', this.value)" ${!isOnline ? 'disabled style="opacity:0.6;"' : ''}>
+                                <option value="">-- No Active Playlist --</option>
+                                ${state.playlists.map(p => `
+                                    <option value="${p.id}" ${d.active_playlist_id === p.id ? 'selected' : ''}>${p.name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        /* --- PLAYLIST MANAGEMENT --- */
+        function loadPlaylist(id) {
+            if (id === 'new') {
+                activePlaylistId = 'new';
+                document.getElementById('playlistNameInput').value = 'New Playlist';
+                activePlaylistItems = [];
+                document.getElementById('deletePlaylistBtn').style.display = 'none';
+            } else {
+                const pl = state.playlists.find(p => p.id === id);
+                if (pl) {
+                    activePlaylistId = pl.id;
+                    document.getElementById('playlistNameInput').value = pl.name;
+                    activePlaylistItems = [...(pl.items || [])];
+                    document.getElementById('deletePlaylistBtn').style.display = 'inline-flex';
+                }
+            }
+            clearDirty();
+            renderPlaylistDropdown();
+            renderTimeline();
+        }
+
+        function onPlaylistDropdownChange(val) {
+            if (isDirty && !confirm("You have unsaved changes in your current playlist. Discard changes?")) {
+                renderPlaylistDropdown(); // reset select element to active state
+                return;
+            }
+            loadPlaylist(val);
+        }
+
+        async function saveActivePlaylist() {
+            if (!isDirty) return;
+
+            const name = document.getElementById('playlistNameInput').value.trim();
+            if (!name) return alert('Please enter a playlist name.');
+
+            const targetId = activePlaylistId === 'new' ? null : activePlaylistId;
+
+            const res = await fetch('/api/save_playlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: targetId,
+                    name,
+                    items: activePlaylistItems
+                })
+            });
+
+            const data = await res.json();
+            if (data.success) {
+                activePlaylistId = data.playlist.id;
+                clearDirty();
+                await fetchState();
+                renderPlaylistDropdown();
+            } else {
+                alert(data.message);
+            }
+        }
+
+        async function deleteCurrentPlaylist() {
+            if (activePlaylistId === 'new' || !confirm('Delete this playlist?')) return;
+            await fetch('/api/delete_playlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: activePlaylistId })
+            });
+            activePlaylistId = 'new';
+            clearDirty();
+            fetchState();
+        }
+
+        /* --- TIMELINE TRACK --- */
+        function renderTimeline() {
+            const track = document.getElementById('timelineTrack');
+            track.innerHTML = '';
+            let totalSeconds = 0;
+
+            activePlaylistItems.forEach((item, index) => {
+                const media = state.media.find(m => m.id === item.media_id);
+                const isVideo = media && media.type === 'video';
+
+                let duration = item.duration || 10;
+                if (isVideo) {
+                    duration = media.duration || duration;
+                    item.duration = duration;
+                }
+
+                totalSeconds += duration;
+
+                const slot = document.createElement('div');
+                slot.className = 'timeline-slot filled';
+                slot.draggable = true;
+
+                slot.ondragstart = (e) => {
+                    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'reorder', index }));
+                };
+
+                let previewHtml = `<div style="font-size:11px; color:#38bdf8;">${media ? media.type : 'Media'}</div>`;
+                if (media) {
+                    if (media.type === 'image' || media.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+                        previewHtml = `<img src="${media.url}" alt="${media.name}">`;
+                    } else if (media.type === 'video') {
+                        previewHtml = `<video src="${media.url}" muted playsinline preload="metadata"></video>`;
+                    }
+                }
+
+                const timeControls = isVideo ? `
+                    <button class="time-btn" disabled title="Video duration is locked">-</button>
+                    <span class="time-val" title="Video duration locked">${duration}s</span>
+                    <button class="time-btn" disabled title="Video duration is locked">+</button>
+                ` : `
+                    <button class="time-btn" onclick="updateItemDuration(${index}, -1)">-</button>
+                    <span class="time-val">${duration}s</span>
+                    <button class="time-btn" onclick="updateItemDuration(${index}, 1)">+</button>
+                `;
+
+                slot.innerHTML = `
+                    <button class="btn-remove-slot" onclick="removeItemFromTimeline(${index})">&times;</button>
+                    <div class="slot-thumb">${previewHtml}</div>
+                    <div class="slot-controls">
+                        ${timeControls}
+                    </div>
+                `;
+
+                track.appendChild(slot);
+            });
+
+            // Start with 5 empty slots minimum, and ensure at least 1 free slot remains available
+            const targetTotalSlots = Math.max(5, activePlaylistItems.length + 1);
+            const emptySlotsToRender = targetTotalSlots - activePlaylistItems.length;
+
+            for (let i = 0; i < emptySlotsToRender; i++) {
+                const slot = document.createElement('div');
+                slot.className = 'timeline-slot';
+                slot.innerHTML = `<div style="margin:auto; color:#334155; font-size:20px;">+</div>`;
+                track.appendChild(slot);
+            }
+
+            document.getElementById('totalDurationLabel').innerText = formatHMS(totalSeconds);
+        }
+
+        function updateItemDuration(index, delta) {
+            if (activePlaylistItems[index]) {
+                const media = state.media.find(m => m.id === activePlaylistItems[index].media_id);
+                if (media && media.type === 'video') return;
+
+                let current = activePlaylistItems[index].duration || 10;
+                activePlaylistItems[index].duration = Math.max(1, current + delta);
+                markDirty();
+                renderTimeline();
+            }
+        }
+
+        function removeItemFromTimeline(index) {
+            activePlaylistItems.splice(index, 1);
+            markDirty();
+            renderTimeline();
+        }
+
+        async function addMediaToTimeline(mediaId) {
+            const media = state.media.find(m => m.id === mediaId);
+            if (!media) return;
+
+            let duration = 10;
+            if (media.type === 'video') {
+                duration = media.duration || await detectVideoDuration(media.url);
+                media.duration = duration;
+            }
+
+            activePlaylistItems.push({ media_id: mediaId, duration });
+            markDirty();
+            renderTimeline();
+        }
+
+        function handleTrackDrop(e) {
+            e.preventDefault();
+            const raw = e.dataTransfer.getData('text/plain');
+            if (!raw) return;
+
+            try {
+                const data = JSON.parse(raw);
+                if (data.type === 'add') {
+                    addMediaToTimeline(data.media_id);
+                } else if (data.type === 'reorder') {
+                    const item = activePlaylistItems.splice(data.index, 1)[0];
+                    activePlaylistItems.push(item);
+                    markDirty();
+                    renderTimeline();
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function formatHMS(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        }
+
+        /* --- MEDIA LIBRARY --- */
+        async function addUrlMedia() {
+            const name = document.getElementById('mediaNameInput').value.trim();
+            const url = document.getElementById('mediaUrlInput').value.trim();
+
+            if (!name || !url) return alert('Provide both title and URL.');
+
+            const formData = new FormData();
+            formData.append('name', name);
+            formData.append('url', url);
+
+            const res = await fetch('/api/upload_media', { method: 'POST', body: formData });
+            const data = await res.json();
+
+            if (data.success) {
+                document.getElementById('mediaNameInput').value = '';
+                document.getElementById('mediaUrlInput').value = '';
+                fetchState();
+            } else {
+                alert(data.message);
+            }
+        }
+
+        async function handleFileUpload(e) {
+            const files = e.target.files;
+            if (!files.length) return;
+
+            const file = files[0];
+            const formData = new FormData();
+            formData.append('name', file.name.split('.')[0]);
+            formData.append('file', file);
+
+            const res = await fetch('/api/upload_media', { method: 'POST', body: formData });
+            const data = await res.json();
+
+            if (data.success) {
+                fetchState();
+            } else {
+                alert(data.message);
+            }
+        }
+
+        function renderLibrary() {
+            const grid = document.getElementById('libraryGrid');
+            const search = document.getElementById('searchLibrary').value.toLowerCase();
+
+            grid.innerHTML = '';
+
+            const filtered = state.media.filter(m => {
+                const matchesType = currentFilter === 'all' || m.type === currentFilter;
+                const matchesSearch = m.name.toLowerCase().includes(search);
+                return matchesType && matchesSearch;
+            });
+
+            if (filtered.length === 0) {
+                grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;">No media items found.</div>`;
+                return;
+            }
+
+            filtered.forEach(m => {
+                const card = document.createElement('div');
+                card.className = 'media-card';
+                card.draggable = true;
+
+                card.ondragstart = (e) => {
+                    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'add', media_id: m.id }));
+                };
+
+                card.ondblclick = () => {
+                    addMediaToTimeline(m.id);
+                };
+
+                let previewHtml = `<div style="font-size:11px; color:#38bdf8;">${m.type.toUpperCase()}</div>`;
+                if (m.type === 'image' || m.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+                    previewHtml = `<img src="${m.url}" alt="${m.name}">`;
+                } else if (m.type === 'video') {
+                    previewHtml = `<video src="${m.url}" muted playsinline preload="metadata"></video>`;
+                }
+
+                card.innerHTML = `
+                    <div class="media-preview">${previewHtml}</div>
+                    <div class="media-title" title="${m.name}">${m.name}</div>
+                `;
+
+                grid.appendChild(card);
+            });
+        }
+
+        function filterLibrary(type, btn) {
+            currentFilter = type;
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderLibrary();
+        }
+
+        function renderPlaylistDropdown() {
+            const select = document.getElementById('playlistSelect');
+            select.innerHTML = '<option value="new" ' + (activePlaylistId === 'new' ? 'selected' : '') + '>+ Create New Playlist</option>' +
+                state.playlists.map(p => `
+                    <option value="${p.id}" ${p.id === activePlaylistId ? 'selected' : ''}>${p.name}</option>
+                `).join('');
+        }
+
+        fetchState();
+        setInterval(fetchState, 2000);
+    </script>
+</body>
+</html>

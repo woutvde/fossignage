@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Signage Display Player</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { 
+      background-color: #0f172a; 
+      color: #f8fafc; 
+      font-family: system-ui, -apple-system, sans-serif; 
+      margin: 0; 
+      padding: 0; 
+      overflow: hidden; 
+      height: 100vh; 
+      width: 100vw;
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+    }
+    
+    /* Pairing Cards */
+    .status-card { 
+      text-align: center; 
+      background: #1e293b; 
+      padding: 48px 40px; 
+      border-radius: 20px; 
+      border: 1px solid #334155; 
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      max-width: 480px;
+      width: 90%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      z-index: 10;
+    }
+
+    .display-code { 
+      font-size: 72px; 
+      font-weight: 800; 
+      letter-spacing: 10px; 
+      color: #38bdf8; 
+      font-family: monospace; 
+      background: #0f172a;
+      padding: 12px 24px;
+      border-radius: 12px;
+      border: 1px dashed #334155;
+      width: 100%;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .status-badge.unlinked { background: #334155; color: #94a3b8; }
+    .status-badge.linked {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.2); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    .screen-icon {
+      width: 56px;
+      height: 56px;
+      background: rgba(56, 189, 248, 0.1);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #38bdf8;
+      margin-bottom: 4px;
+    }
+
+    /* Dual-Layer Viewport with CSS Cross-fade */
+    #mediaViewport { 
+      position: relative;
+      width: 100vw; 
+      height: 100vh; 
+      display: none; 
+      background: #000; 
+      overflow: hidden;
+    }
+
+    .media-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      opacity: 0;
+      transition: opacity 1.2s ease-in-out;
+      pointer-events: none;
+    }
+
+    .media-layer.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .media-layer img, .media-layer video { 
+      max-width: 100%; 
+      max-height: 100%; 
+      object-fit: contain; 
+    }
+    
+    .media-layer iframe { 
+      width: 100%; 
+      height: 100%; 
+      border: none; 
+    }
+
+    /* Hover Control Overlay */
+    .control-overlay {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 9999;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 8px 14px;
+      border-radius: 10px;
+      border: 1px solid #334155;
+    }
+
+    body:hover .control-overlay {
+      opacity: 1;
+    }
+
+    .control-overlay .code-info {
+      font-family: monospace;
+      font-size: 13px;
+      color: #38bdf8;
+      font-weight: bold;
+    }
+
+    .btn-disconnect {
+      background: #ef4444;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn-disconnect:hover {
+      background: #dc2626;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- HOVER OVERLAY CONTROLS -->
+  <div class="control-overlay">
+    <span class="code-info">CODE: <span id="overlayCodeLabel">----</span></span>
+    <button class="btn-disconnect" onclick="disconnectDisplay()">Disconnect</button>
+  </div>
+
+  <!-- VIEW 1: UNLINKED -->
+  <div id="unlinkedView" class="status-card">
+    <div class="status-badge unlinked">Waiting for Pairing</div>
+    <h2 style="margin:0; font-size: 22px;">Display Player Ready</h2>
+    <p style="color: #94a3b8; margin: 0; font-size: 14px;">Enter this code on the Operator Console to link this screen:</p>
+    <div class="display-code" id="displayCodeLabel">----</div>
+  </div>
+
+  <!-- VIEW 2: LINKED BUT NO PLAYLIST -->
+  <div id="noPlaylistView" class="status-card" style="display: none;">
+    <div class="screen-icon">
+      <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
+    </div>
+    <div class="status-badge linked">
+      <span class="pulse-dot"></span>
+      Connected & Online
+    </div>
+    <h2 style="margin:0; font-size: 22px;">Display Ready for Content</h2>
+    <p style="color: #94a3b8; margin: 0; font-size: 14px; line-height: 1.5;">
+      This screen is successfully paired. Select an active playlist from the Operator Console to begin playback.
+    </p>
+    <div style="font-size: 12px; color: #64748b; font-family: monospace; margin-top: 8px;">
+      DISPLAY CODE: <span id="linkedCodeLabel" style="color: #f8fafc;">----</span>
+    </div>
+  </div>
+
+  <!-- VIEW 3: ACTIVE MEDIA PLAYBACK -->
+  <div id="mediaViewport">
+    <div id="layerA" class="media-layer"></div>
+    <div id="layerB" class="media-layer"></div>
+  </div>
+
+  <script>
+    let myCode = localStorage.getItem('signage_display_code');
+    let currentPlaylistId = null;
+    let playlistItems = [];
+    let currentIndex = 0;
+    let playTimer = null;
+    let activeLayerIndex = 0;
+
+    async function initDisplay() {
+      try {
+        const res = await fetch('/api/display/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: myCode || '' })
+        });
+        const data = await res.json();
+        
+        myCode = data.code;
+        localStorage.setItem('signage_display_code', myCode);
+
+        document.getElementById('displayCodeLabel').innerText = myCode;
+        document.getElementById('linkedCodeLabel').innerText = myCode;
+        document.getElementById('overlayCodeLabel').innerText = myCode;
+
+        pollStatus();
+        setInterval(pollStatus, 1500); // Check for updates every 1.5 seconds
+      } catch (err) {
+        console.error('Failed to register/reconnect display with backend:', err);
+      }
+    }
+
+    async function disconnectDisplay() {
+      if (myCode) {
+        try {
+          await fetch('/api/unlink_display', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: myCode })
+          });
+        } catch (err) {
+          console.error('Error during unlinking:', err);
+        }
+      }
+      localStorage.removeItem('signage_display_code');
+      window.location.reload();
+    }
+
+    async function pollStatus() {
+      if (!myCode) return;
+
+      try {
+        const res = await fetch(`/api/display/${myCode}`);
+        if (!res.ok) {
+          // If the server lost track of the code entirely, clean up and re-register
+          localStorage.removeItem('signage_display_code');
+          myCode = null;
+          return initDisplay();
+        }
+
+        const data = await res.json();
+        const unlinkedView = document.getElementById('unlinkedView');
+        const noPlaylistView = document.getElementById('noPlaylistView');
+        const mediaViewport = document.getElementById('mediaViewport');
+
+        if (!data.linked) {
+          unlinkedView.style.display = 'flex';
+          noPlaylistView.style.display = 'none';
+          mediaViewport.style.display = 'none';
+          currentPlaylistId = null;
+          playlistItems = [];
+          clearTimeout(playTimer);
+        } else {
+          unlinkedView.style.display = 'none';
+
+          if (!data.active_playlist_id || !data.media || data.media.length === 0) {
+            noPlaylistView.style.display = 'flex';
+            mediaViewport.style.display = 'none';
+            currentPlaylistId = null;
+            playlistItems = [];
+            clearTimeout(playTimer);
+          } else {
+            noPlaylistView.style.display = 'none';
+            mediaViewport.style.display = 'block';
+
+            // Detect if playlist ID changed OR if items/durations inside the playlist changed
+            const playlistIdChanged = data.active_playlist_id !== currentPlaylistId;
+            const itemsChanged = JSON.stringify(data.media) !== JSON.stringify(playlistItems);
+
+            if (playlistIdChanged || itemsChanged) {
+              currentPlaylistId = data.active_playlist_id;
+              playlistItems = data.media || [];
+
+              if (playlistIdChanged) {
+                currentIndex = 0;
+                renderMedia();
+              } else {
+                if (currentIndex >= playlistItems.length) {
+                  currentIndex = 0;
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Polling error:', err);
+      }
+    }
+
+    function renderMedia() {
+      clearTimeout(playTimer);
+      if (!playlistItems || playlistItems.length === 0) return;
+
+      const media = playlistItems[currentIndex];
+      
+      const layerA = document.getElementById('layerA');
+      const layerB = document.getElementById('layerB');
+
+      const incomingLayer = activeLayerIndex === 0 ? layerB : layerA;
+      const outgoingLayer = activeLayerIndex === 0 ? layerA : layerB;
+
+      incomingLayer.innerHTML = '';
+
+      if (media.type === 'video') {
+        const video = document.createElement('video');
+        video.src = media.url;
+        video.autoplay = true;
+        video.muted = true;
+        video.onended = nextMedia;
+        incomingLayer.appendChild(video);
+      } else if (media.type === 'audio') {
+        incomingLayer.innerHTML = `<div style="text-align:center"><h2>Now Playing: ${media.name}</h2></div>`;
+        const audio = document.createElement('audio');
+        audio.src = media.url;
+        audio.autoplay = true;
+        audio.onended = nextMedia;
+        incomingLayer.appendChild(audio);
+      } else {
+        if (media.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+          incomingLayer.innerHTML = `<img src="${media.url}" alt="${media.name}">`;
+        } else {
+          incomingLayer.innerHTML = `<iframe src="${media.url}"></iframe>`;
+        }
+
+        const durationSeconds = media.duration ? parseInt(media.duration, 10) : 8;
+        playTimer = setTimeout(nextMedia, durationSeconds * 1000);
+      }
+
+      // Smooth Crossfade Transition
+      requestAnimationFrame(() => {
+        incomingLayer.classList.add('active');
+        outgoingLayer.classList.remove('active');
+        activeLayerIndex = activeLayerIndex === 0 ? 1 : 0;
+      });
+    }
+
+    function nextMedia() {
+      if (playlistItems && playlistItems.length > 0) {
+        currentIndex = (currentIndex + 1) % playlistItems.length;
+        renderMedia();
+      }
+    }
+
+    initDisplay();
+  </script>
+</body>
+</html>
