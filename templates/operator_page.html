@@ -305,6 +305,27 @@
         }
         .media-card:hover { transform: translateY(-2px); border-color: #38bdf8; }
 
+        .media-card { position: relative; }
+        .btn-delete-media {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            z-index: 2;
+            background: rgba(239, 68, 68, 0.9);
+            color: white;
+            border: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            font-size: 13px;
+            line-height: 1;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        .media-card:hover .btn-delete-media { display: flex; }
+
         .media-preview {
             flex: 1;
             background: #000;
@@ -461,6 +482,15 @@
         let lastMediaHash = "";
         let lastPlaylistsHash = "";
 
+        function escapeHtml(str) {
+            return String(str ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         // Warn user before leaving page with unsaved changes
         window.addEventListener('beforeunload', (e) => {
             if (isDirty) {
@@ -550,9 +580,15 @@
                 tempVid.src = url;
                 tempVid.onloadedmetadata = () => {
                     const sec = Math.round(tempVid.duration);
+                    tempVid.removeAttribute('src');
+                    tempVid.load();
+                    tempVid.remove();
                     resolve(sec > 0 ? sec : 10);
                 };
-                tempVid.onerror = () => resolve(10);
+                tempVid.onerror = () => {
+                    tempVid.remove();
+                    resolve(10);
+                };
             });
         }
 
@@ -624,7 +660,7 @@
                             <select onchange="assignPlaylistToDisplay('${d.code}', this.value)" ${!isOnline ? 'disabled style="opacity:0.6;"' : ''}>
                                 <option value="">-- No Active Playlist --</option>
                                 ${state.playlists.map(p => `
-                                    <option value="${p.id}" ${d.active_playlist_id === p.id ? 'selected' : ''}>${p.name}</option>
+                                    <option value="${escapeHtml(p.id)}" ${d.active_playlist_id === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -729,12 +765,12 @@
                     e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'reorder', index }));
                 };
 
-                let previewHtml = `<div style="font-size:11px; color:#38bdf8;">${media ? media.type : 'Media'}</div>`;
+                let previewHtml = `<div style="font-size:11px; color:#38bdf8;">${media ? escapeHtml(media.type) : 'Media'}</div>`;
                 if (media) {
                     if (media.type === 'image' || media.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
-                        previewHtml = `<img src="${media.url}" alt="${media.name}">`;
+                        previewHtml = `<img src="${escapeHtml(media.url)}" alt="${escapeHtml(media.name)}">`;
                     } else if (media.type === 'video') {
-                        previewHtml = `<video src="${media.url}" muted playsinline preload="metadata"></video>`;
+                        previewHtml = `<video src="${escapeHtml(media.url)}" muted playsinline preload="metadata"></video>`;
                     }
                 }
 
@@ -905,20 +941,31 @@
                     addMediaToTimeline(m.id);
                 };
 
-                let previewHtml = `<div style="font-size:11px; color:#38bdf8;">${m.type.toUpperCase()}</div>`;
+                let previewHtml = `<div style="font-size:11px; color:#38bdf8;">${escapeHtml(m.type.toUpperCase())}</div>`;
                 if (m.type === 'image' || m.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
-                    previewHtml = `<img src="${m.url}" alt="${m.name}">`;
+                    previewHtml = `<img src="${escapeHtml(m.url)}" alt="${escapeHtml(m.name)}">`;
                 } else if (m.type === 'video') {
-                    previewHtml = `<video src="${m.url}" muted playsinline preload="metadata"></video>`;
+                    previewHtml = `<video src="${escapeHtml(m.url)}" muted playsinline preload="metadata"></video>`;
                 }
 
                 card.innerHTML = `
+                    <button class="btn-delete-media" title="Delete media" onclick="deleteMedia('${escapeHtml(m.id)}')">&times;</button>
                     <div class="media-preview">${previewHtml}</div>
-                    <div class="media-title" title="${m.name}">${m.name}</div>
+                    <div class="media-title" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
                 `;
 
                 grid.appendChild(card);
             });
+        }
+
+        async function deleteMedia(mediaId) {
+            if (!confirm('Delete this media item? It will be removed from all playlists.')) return;
+            await fetch('/api/delete_media', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: mediaId })
+            });
+            fetchState();
         }
 
         function filterLibrary(type, btn) {

@@ -230,6 +230,15 @@
     let playTimer = null;
     let activeLayerIndex = 0;
 
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     async function initDisplay() {
       try {
         const res = await fetch('/api/display/register', {
@@ -317,10 +326,10 @@
               if (playlistIdChanged) {
                 currentIndex = 0;
                 renderMedia();
-              } else {
-                if (currentIndex >= playlistItems.length) {
-                  currentIndex = 0;
-                }
+              } else if (currentIndex >= playlistItems.length) {
+                // The current item was removed from the playlist; restart from the top
+                currentIndex = 0;
+                renderMedia();
               }
             }
           }
@@ -350,21 +359,26 @@
         video.autoplay = true;
         video.muted = true;
         video.onended = nextMedia;
+        video.onerror = () => { console.error('Video failed to load:', media.url); nextMedia(); };
         incomingLayer.appendChild(video);
-      } else if (media.type === 'audio') {
-        incomingLayer.innerHTML = `<div style="text-align:center"><h2>Now Playing: ${media.name}</h2></div>`;
-        const audio = document.createElement('audio');
-        audio.src = media.url;
-        audio.autoplay = true;
-        audio.onended = nextMedia;
-        incomingLayer.appendChild(audio);
+      } else if (media.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+        const img = document.createElement('img');
+        img.src = media.url;
+        img.alt = media.name;
+        img.onerror = () => { console.error('Image failed to load:', media.url); nextMedia(); };
+        incomingLayer.appendChild(img);
       } else {
-        if (media.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
-          incomingLayer.innerHTML = `<img src="${media.url}" alt="${media.name}">`;
-        } else {
-          incomingLayer.innerHTML = `<iframe src="${media.url}"></iframe>`;
-        }
+        const iframe = document.createElement('iframe');
+        iframe.src = media.url;
+        iframe.onload = () => {
+          const durationSeconds = media.duration ? parseInt(media.duration, 10) : 8;
+          playTimer = setTimeout(nextMedia, durationSeconds * 1000);
+        };
+        incomingLayer.appendChild(iframe);
+      }
 
+      // Images advance on a timer; videos/iframes handle their own timing
+      if (media.type !== 'video' && media.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
         const durationSeconds = media.duration ? parseInt(media.duration, 10) : 8;
         playTimer = setTimeout(nextMedia, durationSeconds * 1000);
       }
@@ -378,10 +392,36 @@
     }
 
     function nextMedia() {
-      if (playlistItems && playlistItems.length > 0) {
-        currentIndex = (currentIndex + 1) % playlistItems.length;
-        renderMedia();
+      if (!playlistItems || playlistItems.length === 0) return;
+
+      // Single-item playlist: restart the current media in place instead of
+      // re-rendering, which would clear the DOM and cause a visible flash.
+      if (playlistItems.length === 1) {
+        const media = playlistItems[0];
+        const activeLayer = activeLayerIndex === 0 ? document.getElementById('layerA') : document.getElementById('layerB');
+        const el = activeLayer.firstElementChild;
+
+        if (media.type === 'video' && el && el.tagName === 'VIDEO') {
+          el.currentTime = 0;
+          el.play().catch(() => {});
+        } else if (el && el.tagName === 'IFRAME') {
+          // Reload the iframe by resetting its src so the page restarts
+          const src = el.src;
+          el.src = '';
+          el.src = src;
+        }
+
+        // Restart the timer for timed media (images/iframes)
+        if (media.type !== 'video') {
+          const durationSeconds = media.duration ? parseInt(media.duration, 10) : 8;
+          clearTimeout(playTimer);
+          playTimer = setTimeout(nextMedia, durationSeconds * 1000);
+        }
+        return;
       }
+
+      currentIndex = (currentIndex + 1) % playlistItems.length;
+      renderMedia();
     }
 
     initDisplay();

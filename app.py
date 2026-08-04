@@ -7,6 +7,8 @@ import string
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 
+MAX_CONTENT_LENGTH = 200 * 1024 * 1024  # 200 MB upload limit
+
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
@@ -16,6 +18,7 @@ DATA_FILE = os.path.join(BASE_DIR, 'data.json')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'ogg', 'mov'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- IN-MEMORY STATE STORE ---
@@ -85,7 +88,10 @@ def display_page():
 
 @app.route('/static/media/<filename>')
 def serve_upload(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+    # Cache media aggressively so displays don't re-download on every poll
+    response = send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
 
 # --- API ENDPOINTS ---
 
@@ -173,7 +179,9 @@ def poll_display(code_id):
 @app.route('/api/link_display', methods=['POST'])
 def link_display():
     data = request.json or {}
-    code = data.get('code', '').upper()
+    code = data.get('code', '').strip().upper()
+    if not code or len(code) != 4:
+        return jsonify({"success": False, "message": "Invalid display code."}), 400
     display = next((d for d in state['displays'] if d['code'] == code), None)
 
     if not display:
@@ -295,6 +303,19 @@ def delete_media():
     data = request.json or {}
     media_id = data.get('id')
 
+    # Remove the file from disk if it's a locally uploaded file
+    media = next((m for m in state['media'] if m['id'] == media_id), None)
+    if media and media.get('url', '').startswith('/static/media/'):
+        filename = media['url'].rsplit('/', 1)[-1]
+        # Guard against path traversal
+        if filename and '/' not in filename and '\\' not in filename:
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    print(f"[STORAGE] Error deleting file {filename}: {e}")
+
     state['media'] = [m for m in state['media'] if m['id'] != media_id]
 
     for p in state['playlists']:
@@ -304,11 +325,15 @@ def delete_media():
     return jsonify({"success": True})
 
 if __name__ == '__main__':
+    host = os.environ.get('SIGNAGE_HOST', '0.0.0.0')
+    port = int(os.environ.get('SIGNAGE_PORT', '5000'))
+    debug = os.environ.get('SIGNAGE_DEBUG', '0') == '1'
+
     print("\n-------------------------------------------------------------")
     print(" Digital Signage Server Started!")
-    print(" - Operator Console: http://127.0.0.1:5000/operator")
-    print(" - Display Player:    http://127.0.0.1:5000/display")
+    print(f" - Operator Console: http://127.0.0.1:{port}/operator")
+    print(f" - Display Player:    http://127.0.0.1:{port}/display")
     print(" - Storage File:     data.json")
     print(" - Uploads Path:     static/media/")
     print("-------------------------------------------------------------\n")
-    app.run(debug=True, port=5000)
+    app.run(host=host, port=port, debug=debug)
