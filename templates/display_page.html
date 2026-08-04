@@ -402,21 +402,16 @@
         const el = activeLayer.firstElementChild;
 
         if (media.type === 'video' && el && el.tagName === 'VIDEO') {
+          // Loop the video in place
           el.currentTime = 0;
           el.play().catch(() => {});
-        } else if (el && el.tagName === 'IFRAME') {
-          // Reload the iframe by resetting its src so the page restarts
-          const src = el.src;
-          el.src = '';
-          el.src = src;
-        }
-
-        // Restart the timer for timed media (images/iframes)
-        if (media.type !== 'video') {
+        } else if (media.type !== 'video' && media.url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+          // Restart the timer for a single image (no DOM change, no flash)
           const durationSeconds = media.duration ? parseInt(media.duration, 10) : 8;
           clearTimeout(playTimer);
           playTimer = setTimeout(nextMedia, durationSeconds * 1000);
         }
+        // A single webpage (iframe) simply stays loaded — nothing to do.
         return;
       }
 
