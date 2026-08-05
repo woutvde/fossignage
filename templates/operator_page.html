@@ -481,6 +481,7 @@
         let isInitialLoad = true;
         let lastMediaHash = "";
         let lastPlaylistsHash = "";
+        let lastDisplaysHash = "";
 
         function escapeHtml(str) {
             return String(str ?? '')
@@ -546,20 +547,22 @@
                     isInitialLoad = false;
                 }
 
-                renderDisplays();
-                renderPlaylistDropdown();
-
-                // Prevent Video Flashing: Only re-render Library if media state actually changes
-                const currentMediaHash = JSON.stringify(state.media);
-                if (currentMediaHash !== lastMediaHash) {
-                    lastMediaHash = currentMediaHash;
-                    renderLibrary();
+                // Only re-render displays when their data actually changes, so an
+                // open dropdown isn't closed by the 2s poll rebuilding the DOM.
+                const currentDisplaysHash = JSON.stringify(state.displays);
+                if (currentDisplaysHash !== lastDisplaysHash) {
+                    lastDisplaysHash = currentDisplaysHash;
+                    renderDisplays();
                 }
 
-                // Only reload track from state if playlist collection updated externally AND local edits are saved
+                // Only re-render the playlist dropdown when the playlist collection changes,
+                // so an open dropdown isn't closed by the 2s poll rebuilding the DOM.
                 const currentPlaylistsHash = JSON.stringify(state.playlists);
                 if (currentPlaylistsHash !== lastPlaylistsHash) {
                     lastPlaylistsHash = currentPlaylistsHash;
+                    renderPlaylistDropdown();
+
+                    // Only reload the track from state if local edits are saved
                     if (!isDirty && activePlaylistId !== 'new') {
                         const current = state.playlists.find(p => p.id === activePlaylistId);
                         if (current) {
@@ -567,6 +570,13 @@
                             renderTimeline();
                         }
                     }
+                }
+
+                // Prevent Video Flashing: Only re-render Library if media state actually changes
+                const currentMediaHash = JSON.stringify(state.media);
+                if (currentMediaHash !== lastMediaHash) {
+                    lastMediaHash = currentMediaHash;
+                    renderLibrary();
                 }
             } catch (err) {
                 console.error('State sync error:', err);
