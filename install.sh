@@ -154,6 +154,10 @@ spinner "installing python dependencies" \
 
 spinner "setting ownership" chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
+# Log directory for the player (writable by the service user)
+mkdir -p /var/log/fossignage
+chown "$SERVICE_USER:$SERVICE_USER" /var/log/fossignage
+
 # ---------------------------------------------------------------------------
 # Autologin on tty1 + player launch from shell profile
 #

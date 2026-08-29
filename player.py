@@ -43,13 +43,44 @@ import urllib.request
 DEFAULT_SERVER = os.environ.get("SIGNAGE_SERVER", "http://127.0.0.1:5000")
 DEFAULT_CODE_FILE = os.environ.get("SIGNAGE_CODE_FILE",
                                    os.path.expanduser("~/.fossignage_display_code"))
+DEFAULT_LOG_DIR = os.environ.get("SIGNAGE_LOG_DIR", "/var/log/fossignage")
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 ANIMATED_EXTS = (".gif",)  # need a video-style player to animate
 VIDEO_EXTS = (".mp4", ".webm", ".ogg", ".mov", ".mkv", ".avi")
 
 
+def setup_logging(log_dir=DEFAULT_LOG_DIR):
+    """Log to <log_dir>/player.log, falling back to stderr if unavailable
+    (e.g. no permission). Keeps the last ~1 MB per file, one rotated copy."""
+    global _LOG_PATH
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        _LOG_PATH = os.path.join(log_dir, "player.log")
+    except OSError:
+        _LOG_PATH = None
+
+
+def _rotate_if_needed(path, max_bytes=1024 * 1024):
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > max_bytes:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+
+
 def log(msg):
-    print(f"[player] {time.strftime('%H:%M:%S')} {msg}", flush=True)
+    line = f"[player] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(line, flush=True)
+    if _LOG_PATH:
+        try:
+            _rotate_if_needed(_LOG_PATH)
+            with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+
+_LOG_PATH = None
 
 
 def get_lan_ip():
@@ -140,6 +171,11 @@ class NativePlayer:
         with self._lock:
             if self.proc is proc:  # not superseded by a stop()/new item
                 self.proc = None
+        # If the player died almost instantly it failed to play the file
+        # (bad flag, unsupported format, no X connection...). Log it loudly
+        # and advance anyway so one broken item can't stall the playlist.
+        if proc.returncode not in (0, None):
+            log(f"player exited with code {proc.returncode}")
         self.on_video_end()
 
     # -- rendering ---------------------------------------------------------
@@ -243,7 +279,7 @@ class NativePlayer:
                 cmd.insert(1, "--loop")
         elif mpv:
             cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
-                   "--cursor-autohide=no", "--no-fixed-vo",
+                   "--cursor-autohide=no",
                    # stretch to fill the screen regardless of aspect ratio
                    "--panscan=1.0",
                    "--loop-file=" + ("inf" if loop else "no"),
@@ -296,15 +332,33 @@ class NativePlayer:
             log(f"no chromium found; cannot display URL {url}")
             self.on_video_end()
             return
+        # --start-maximized only works when X reports screen sizes via
+        # XRANDR/WM hints; with a bare X (no WM) chromium can open windowed.
+        # Query the real geometry and force it with --window-size instead.
+        w, h = self._screen_size()
         cmd = [chromium, "--kiosk", "--noerrdialogs", "--disable-infobars",
                "--disable-session-crashed-bubble", "--no-first-run",
-               "--start-maximized", "--window-position=0,0",
+               f"--window-size={w},{h}", "--window-position=0,0",
                "--disable-gpu" if not find_binary("omxplayer") else "--enable-gpu-rasterization",
                "--check-for-update-interval=31536000", url]
         if self._start(cmd):
             self.timer = threading.Timer(duration, self.on_video_end)
             self.timer.daemon = True
             self.timer.start()
+
+    def _screen_size(self):
+        """Actual display resolution via xrandr, with sane fallbacks."""
+        try:
+            out = subprocess.run(["xrandr", "--current"], capture_output=True,
+                                 text=True, timeout=5).stdout
+            for line in out.splitlines():
+                if "*" in line:  # current mode is marked with *
+                    dims = line.split()[0]  # e.g. "3840x2160"
+                    w, h = dims.split("x")
+                    return int(w), int(h)
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            log(f"could not query screen size via xrandr: {e}")
+        return 1920, 1080
 
     def _ensure_local(self, url):
         """Download server-hosted media to a temp file so viewers can read it."""
@@ -487,8 +541,11 @@ def main():
     ap.add_argument("--unlink", action="store_true",
                     help="unlink this display from the server and exit")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--log-dir", default=DEFAULT_LOG_DIR,
+                    help="directory for player.log (default: %(default)s)")
     args = ap.parse_args()
 
+    setup_logging(args.log_dir)
     client = DisplayClient(args.server, args.code_file, args.poll_interval,
                            args.standalone, args.debug)
 
