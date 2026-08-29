@@ -278,11 +278,18 @@ class NativePlayer:
             if loop:
                 cmd.insert(1, "--loop")
         elif vlc:
-            # VLC first: its --fullscreen honours the X geometry reliably,
-            # while mpv's --panscan can overshoot on some setups.
+            # VLC first. Fit the video inside the actual screen size instead
+            # of trusting --fullscreen (which misbehaves on bare X / odd
+            # geometries like 1283x800): scale to the detected resolution and
+            # disable any cropping or aspect-ratio guessing.
+            w, h = self._screen_size()
             cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
-                   "--fullscreen", "--no-mouse-events", "--play-and-exit",
-                   "--no-embedded-video"]
+                   "--no-mouse-events", "--play-and-exit",
+                   "--no-autocrop", "--crop=none",
+                   "--aspect-ratio=default",
+                   f"--width={w}", f"--height={h}",
+                   "--vout=x11",
+                   f"--x11-display={os.environ.get('DISPLAY', ':0')}"]
             if loop:
                 cmd.append("--loop")
             cmd.append(full_url)
