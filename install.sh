@@ -158,6 +158,21 @@ spinner "setting ownership" chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR
 mkdir -p /var/log/fossignage
 chown "$SERVICE_USER:$SERVICE_USER" /var/log/fossignage
 
+# Logrotate: keep player logs bounded (player.py also self-rotates at 1MB,
+# but logrotate is the safety net for the directory as a whole)
+cat > /etc/logrotate.d/fossignage <<EOF
+/var/log/fossignage/*.log {
+    daily
+    rotate 7
+    maxsize 5M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}
+EOF
+
 # ---------------------------------------------------------------------------
 # Autologin on tty1 + player launch from shell profile
 #
