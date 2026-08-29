@@ -270,13 +270,22 @@ class NativePlayer:
     def _play_video(self, url, loop):
         full_url = url if url.startswith("http") else self.server + url
         omx = find_binary("omxplayer")
-        mpv = find_binary("mpv")
         vlc = find_binary("vlc")
+        mpv = find_binary("mpv")
         ffplay = find_binary("ffplay")
         if omx:
             cmd = [omx, "--no-osd", "--blank", "-o", "both", full_url]
             if loop:
                 cmd.insert(1, "--loop")
+        elif vlc:
+            # VLC first: its --fullscreen honours the X geometry reliably,
+            # while mpv's --panscan can overshoot on some setups.
+            cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
+                   "--fullscreen", "--no-mouse-events", "--play-and-exit",
+                   "--no-embedded-video"]
+            if loop:
+                cmd.append("--loop")
+            cmd.append(full_url)
         elif mpv:
             cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
                    "--cursor-autohide=no",
@@ -284,14 +293,6 @@ class NativePlayer:
                    "--panscan=1.0",
                    "--loop-file=" + ("inf" if loop else "no"),
                    "--really-quiet", full_url]
-        elif vlc:
-            cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
-                   "--fullscreen", "--no-mouse-events", "--play-and-exit",
-                   # fill screen (aspect-ratio-preserving zoom)
-                   "--zoom", "2.0"]
-            if loop:
-                cmd.append("--loop")
-            cmd.append(full_url)
         elif ffplay:
             cmd = [ffplay, "-noborder", "-alwaysontop", "-autoexit",
                    "-loglevel", "quiet", "-window_title", "fossignage",
@@ -347,17 +348,29 @@ class NativePlayer:
             self.timer.start()
 
     def _screen_size(self):
-        """Actual display resolution via xrandr, with sane fallbacks."""
+        """Actual display resolution via xrandr/xdpyr, with sane fallbacks."""
+        # Preferred: xrandr current mode (marked with *)
         try:
             out = subprocess.run(["xrandr", "--current"], capture_output=True,
                                  text=True, timeout=5).stdout
             for line in out.splitlines():
-                if "*" in line:  # current mode is marked with *
+                if "*" in line:
                     dims = line.split()[0]  # e.g. "3840x2160"
                     w, h = dims.split("x")
                     return int(w), int(h)
         except (OSError, ValueError, subprocess.SubprocessError) as e:
-            log(f"could not query screen size via xrandr: {e}")
+            log(f"xrandr query failed: {e}")
+        # Fallback: xdpyinfo reports the root window dimensions
+        try:
+            out = subprocess.run(["xdpyinfo"], capture_output=True,
+                                 text=True, timeout=5).stdout
+            for line in out.splitlines():
+                if line.startswith("  dimensions:"):
+                    dims = line.split()[1]  # e.g. "3840x2160"
+                    w, h = dims.split("x")
+                    return int(w), int(h)
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            log(f"xdpyinfo query failed: {e}")
         return 1920, 1080
 
     def _ensure_local(self, url):
