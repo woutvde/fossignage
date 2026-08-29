@@ -150,10 +150,12 @@ class NativePlayer:
                         pass
                 self.proc = None
 
-    def _start(self, cmd, wait_for_exit=False):
+    def _start(self, cmd, wait_for_exit=False, env=None):
         log("exec: " + " ".join(cmd))
         kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                       start_new_session=True)
+        if env:
+            kwargs["env"] = env
         try:
             self.proc = subprocess.Popen(cmd, **kwargs)
         except OSError as e:
@@ -278,19 +280,26 @@ class NativePlayer:
             if loop:
                 cmd.insert(1, "--loop")
         elif vlc:
-            # VLC first. Fit the video inside the actual screen size instead
-            # of trusting --fullscreen (which misbehaves on bare X / odd
-            # geometries like 1283x800): scale to the detected resolution and
-            # disable any cropping or aspect-ratio guessing.
+            # VLC first. On bare X (no WM) VLC 3 cannot embed its video
+            # window normally ("parent window not available"), so we draw
+            # into the root window via the xcb window with fullscreen
+            # geometry taken from the detected screen size.
             w, h = self._screen_size()
+            env = dict(os.environ,
+                       DISPLAY=os.environ.get("DISPLAY", ":0"),
+                       XDG_RUNTIME_DIR="/tmp/xdg")
+            os.makedirs("/tmp/xdg", exist_ok=True)
             cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
                    "--no-mouse-events", "--play-and-exit",
                    "--no-autocrop", "--crop=none",
                    "--aspect-ratio=default",
+                   "--vout", "xcb",
+                   "--xcb-window-id", "0",   # 0 => draw on the root window
                    f"--width={w}", f"--height={h}"]
             if loop:
                 cmd.append("--loop")
             cmd.append(full_url)
+            return self._start(cmd, wait_for_exit=True, env=env)
         elif mpv:
             cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
                    "--cursor-autohide=no",
