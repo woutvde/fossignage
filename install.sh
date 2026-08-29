@@ -44,7 +44,7 @@ spinner() {
   local frames='|/-\' i=0
   printf '  %s ' "$msg"
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\b%s' "${frames:i++%4:1}"
+    printf '\b%c ' "${frames:i++%4:1}"
     sleep 0.15
   done
   wait "$pid"; local rc=$?
@@ -95,8 +95,10 @@ spinner "installing packages"      apt-get install -y --no-install-recommends \
 
 # omxplayer is not available on newer (bookworm+) releases; that's fine,
 # the player falls back to vlc/ffplay automatically.
-if spinner "installing omxplayer (optional)" \
-     apt-get install -y --no-install-recommends omxplayer; then :; fi
+if ! spinner "installing omxplayer (optional)" \
+     apt-get install -y --no-install-recommends omxplayer; then
+  info "omxplayer unavailable - video will use vlc/ffplay"
+fi
 
 # Debian 12+: python3-venv is versioned (e.g. python3.13-venv) and the
 # meta-package may not pull the real one. Detect the running interpreter.
