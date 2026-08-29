@@ -272,18 +272,30 @@ class NativePlayer:
     def _play_video(self, url, loop):
         full_url = url if url.startswith("http") else self.server + url
         omx = find_binary("omxplayer")
-        vlc = find_binary("vlc")
         mpv = find_binary("mpv")
+        vlc = find_binary("vlc")
         ffplay = find_binary("ffplay")
         if omx:
             cmd = [omx, "--no-osd", "--blank", "-o", "both", full_url]
             if loop:
                 cmd.insert(1, "--loop")
+        elif mpv:
+            # mpv first: it handles bare X (no WM) reliably via its own
+            # fullscreen window, unlike VLC 3 which segfaults in wallpaper
+            # mode without a window manager.
+            # --panscan=1.0 fills the screen (crops overflow); use it only
+            # when the video aspect matches the screen, otherwise letterbox.
+            w, h = self._screen_size()
+            cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
+                   "--cursor-autohide=no",
+                   "--geometry={}x{}+0+0".format(w, h),
+                   "--autofit-larger={}x{}".format(w, h),
+                   "--loop-file=" + ("inf" if loop else "no"),
+                   "--really-quiet", full_url]
         elif vlc:
-            # VLC first. On bare X (no WM) VLC 3 cannot embed its video
+            # VLC fallback. On bare X (no WM) VLC 3 cannot embed its video
             # window normally ("parent window not available"), so we use
             # wallpaper mode: draw the video directly onto the root window.
-            # --width/--height + autoscale keep the video fitted to screen.
             w, h = self._screen_size()
             env = dict(os.environ,
                        DISPLAY=os.environ.get("DISPLAY", ":0"),
@@ -300,13 +312,6 @@ class NativePlayer:
                 cmd.append("--loop")
             cmd.append(full_url)
             return self._start(cmd, wait_for_exit=True, env=env)
-        elif mpv:
-            cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
-                   "--cursor-autohide=no",
-                   # stretch to fill the screen regardless of aspect ratio
-                   "--panscan=1.0",
-                   "--loop-file=" + ("inf" if loop else "no"),
-                   "--really-quiet", full_url]
         elif ffplay:
             cmd = [ffplay, "-noborder", "-alwaysontop", "-autoexit",
                    "-loglevel", "quiet", "-window_title", "fossignage",
