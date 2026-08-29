@@ -113,7 +113,8 @@ spinner "installing packages"      apt-get install -y --no-install-recommends \
   chromium \
   ffmpeg \
   mpv \
-  vlc
+  vlc \
+  unclutter
 
 # Debian 12+ and Ubuntu 24.04+: python3-venv is versioned
 # (e.g. python3.13-venv) and the meta-package may not pull the real one.
@@ -175,6 +176,8 @@ cat > /home/${SERVICE_USER}/.bash_profile <<'EOF'
 # Fossignage kiosk: start X + fullscreen player on tty1 login.
 # Skip when not on tty1 or when already running (e.g. SSH sessions).
 if [ "$(tty)" = "/dev/tty1" ] && ! pgrep -f 'player.py' >/dev/null; then
+    # Hide the mouse cursor on the kiosk screen
+    unclutter -idle 0 -root -noevents &
     while true; do
         xinit /opt/fossignage/venv/bin/python /opt/fossignage/player.py \
             --standalone \

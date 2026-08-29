@@ -243,17 +243,23 @@ class NativePlayer:
                 cmd.insert(1, "--loop")
         elif mpv:
             cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
+                   "--cursor-autohide=no", "--no-fixed-vo",
+                   # stretch to fill the screen regardless of aspect ratio
+                   "--panscan=1.0",
                    "--loop-file=" + ("inf" if loop else "no"),
                    "--really-quiet", full_url]
         elif vlc:
             cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
-                   "--fullscreen", "--play-and-exit"]
+                   "--fullscreen", "--no-mouse-events", "--play-and-exit",
+                   # fill screen (aspect-ratio-preserving zoom)
+                   "--zoom", "2.0"]
             if loop:
                 cmd.append("--loop")
             cmd.append(full_url)
         elif ffplay:
             cmd = [ffplay, "-noborder", "-alwaysontop", "-autoexit",
-                   "-loglevel", "quiet", "-window_title", "fossignage"]
+                   "-loglevel", "quiet", "-window_title", "fossignage",
+                   "-fs", "-left", "0", "-top", "0"]
             if loop:
                 cmd.append("-loop")
                 cmd.append("0")
@@ -292,6 +298,7 @@ class NativePlayer:
             return
         cmd = [chromium, "--kiosk", "--noerrdialogs", "--disable-infobars",
                "--disable-session-crashed-bubble", "--no-first-run",
+               "--start-maximized", "--window-position=0,0",
                "--disable-gpu" if not find_binary("omxplayer") else "--enable-gpu-rasterization",
                "--check-for-update-interval=31536000", url]
         if self._start(cmd):
@@ -434,6 +441,18 @@ class DisplayClient:
     def advance(self):
         """Called when the current item finishes (video end / image timer)."""
         if self.state != "playing" or not self.items:
+            return
+        # Single-item playlist: keep the item loaded. Videos/GIFs loop in
+        # place (loop=True was passed at launch); images just restart their
+        # timer. Relaunching would cause a visible flash/reload every cycle.
+        if len(self.items) == 1:
+            item = self.items[0]
+            if item.get("type") != "video" \
+                    and not item.get("url", "").lower().endswith(VIDEO_EXTS + ANIMATED_EXTS):
+                duration = int(item.get("duration") or 8)
+                self.player.timer = threading.Timer(duration, self.advance)
+                self.player.timer.daemon = True
+                self.player.timer.start()
             return
         self.index = (self.index + 1) % len(self.items)
         self._play_current()
