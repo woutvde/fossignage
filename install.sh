@@ -50,10 +50,10 @@ if ! command -v omxplayer >/dev/null 2>&1; then
 fi
 
 echo "==> Deploying code to ${INSTALL_DIR}..."
-mkdir -p "$INSTALL_DIR"
-cp -r "$SRC_DIR"/app.py "$SRC_DIR"/player.py "$SRC_DIR"/templates \
-      "$SRC_DIR"/static "$SRC_DIR"/requirements.txt "$INSTALL_DIR"/
-mkdir -p "$INSTALL_DIR/static/media"
+mkdir -p "$INSTALL_DIR/static/media" "$INSTALL_DIR/templates"
+cp -r "$SRC_DIR"/app.py "$SRC_DIR"/player.py "$SRC_DIR"/requirements.txt "$INSTALL_DIR"/
+[[ -d "$SRC_DIR/templates" ]] && cp -r "$SRC_DIR"/templates/. "$INSTALL_DIR/templates/"
+[[ -d "$SRC_DIR/static" ]] && cp -r "$SRC_DIR"/static/. "$INSTALL_DIR/static/"
 
 echo "==> Creating python venv..."
 python3 -m venv "$INSTALL_DIR/venv"
