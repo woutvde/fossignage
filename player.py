@@ -287,9 +287,7 @@ class NativePlayer:
                    "--no-mouse-events", "--play-and-exit",
                    "--no-autocrop", "--crop=none",
                    "--aspect-ratio=default",
-                   f"--width={w}", f"--height={h}",
-                   "--vout=x11",
-                   f"--x11-display={os.environ.get('DISPLAY', ':0')}"]
+                   f"--width={w}", f"--height={h}"]
             if loop:
                 cmd.append("--loop")
             cmd.append(full_url)

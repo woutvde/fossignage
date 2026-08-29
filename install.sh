@@ -107,6 +107,7 @@ spinner "installing packages"      apt-get install -y --no-install-recommends \
   python3 python3-pip \
   passwd \
   xserver-xorg xinit xterm \
+  x11-xserver-utils \
   feh fbi \
   imagemagick \
   fonts-dejavu-core \
