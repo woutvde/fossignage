@@ -28,12 +28,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# Dedicated system user to run the services (override with SERVICE_USER=x)
-if ! id "$SERVICE_USER" &>/dev/null; then
-  useradd --system --create-home --shell /bin/bash "$SERVICE_USER"
-  echo "==> Created service user: $SERVICE_USER"
-fi
-
+# Insall all required packages first
 echo "==> Installing system packages (this can take a few minutes)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -47,6 +42,13 @@ apt-get install -y --no-install-recommends \
   chromium \
   ffmpeg \
   vlc
+# Dedicated system user to run the services (override with SERVICE_USER=x)
+if ! id "$SERVICE_USER" &>/dev/null; then
+  useradd --system --create-home --shell /bin/bash "$SERVICE_USER"
+  echo "==> Created service user: $SERVICE_USER"
+fi
+
+
 
 # omxplayer is not available on newer (bookworm+) releases; that's fine,
 # the player falls back to vlc/ffplay automatically.
