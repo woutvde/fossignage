@@ -281,9 +281,9 @@ class NativePlayer:
                 cmd.insert(1, "--loop")
         elif vlc:
             # VLC first. On bare X (no WM) VLC 3 cannot embed its video
-            # window normally ("parent window not available"), so we draw
-            # into the root window via the xcb window with fullscreen
-            # geometry taken from the detected screen size.
+            # window normally ("parent window not available"), so we use
+            # wallpaper mode: draw the video directly onto the root window.
+            # --width/--height + autoscale keep the video fitted to screen.
             w, h = self._screen_size()
             env = dict(os.environ,
                        DISPLAY=os.environ.get("DISPLAY", ":0"),
@@ -293,8 +293,8 @@ class NativePlayer:
                    "--no-mouse-events", "--play-and-exit",
                    "--no-autocrop", "--crop=none",
                    "--aspect-ratio=default",
-                   "--vout", "xcb",
-                   "--xcb-window-id", "0",   # 0 => draw on the root window
+                   "--video-wallpaper",
+                   "--autoscale",
                    f"--width={w}", f"--height={h}"]
             if loop:
                 cmd.append("--loop")
