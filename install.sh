@@ -41,17 +41,18 @@ spinner() {
   local tmp; tmp=$(mktemp)
   "$@" >"$tmp" 2>&1 &
   local pid=$!
-  local frames='|/-\' i=0
-  printf '  %s ' "$msg"
+  local frames='|/-\' i=0 frame
+  # Redraw the whole line with \r; pad with spaces to clear leftovers.
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\b%c ' "${frames:i++%4:1}"
+    frame="${frames:i++%4:1}"
+    printf '\r  %s %s   ' "$msg" "$frame"
     sleep 0.15
   done
   wait "$pid"; local rc=$?
   if [[ $rc -eq 0 ]]; then
-    printf '\b%s\n' "${C_GREEN}done${C_OFF}"
+    printf '\r  %s %s\n' "$msg" "${C_GREEN}done${C_OFF}"
   else
-    printf '\b%s\n' "${C_RED}FAILED${C_OFF}"
+    printf '\r  %s %s\n' "$msg" "${C_RED}FAILED${C_OFF}"
     echo "${C_DIM}---- command output ----${C_OFF}" >&2
     cat "$tmp" >&2
     echo "${C_DIM}------------------------${C_OFF}" >&2
