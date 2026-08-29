@@ -28,7 +28,13 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# Insall all required packages first
+# Ensure sbin dirs are on PATH (minimal installs may omit them)
+case ":$PATH:" in
+  *":/usr/sbin:"*) ;;
+  *) export PATH="$PATH:/usr/sbin:/sbin" ;;
+esac
+
+# Install all required packages first
 echo "==> Installing system packages (this can take a few minutes)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -74,6 +80,41 @@ python3 -m venv "$INSTALL_DIR/venv"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # ---------------------------------------------------------------------------
+# Autologin on tty1 + player launch from shell profile
+#
+# Launching xinit directly from a systemd unit is unreliable (X needs a real
+# login session for tty ownership and .Xauthority). Instead we configure
+# getty to autologin the service user on tty1, and start X from the shell
+# profile - the same approach Raspberry Pi OS uses.
+# ---------------------------------------------------------------------------
+echo "==> Configuring autologin on tty1..."
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin ${SERVICE_USER} --noclear %I \$TERM
+Restart=always
+EOF
+
+echo "==> Installing player launch hook..."
+cat > /home/${SERVICE_USER}/.bash_profile <<'EOF'
+# Fossignage kiosk: start X + fullscreen player on tty1 login.
+# Skip when not on tty1 or when already running (e.g. SSH sessions).
+if [ "$(tty)" = "/dev/tty1" ] && ! pgrep -f 'player.py' >/dev/null; then
+    while true; do
+        xinit /opt/fossignage/venv/bin/python /opt/fossignage/player.py \
+            --standalone \
+            --server http://127.0.0.1:5000 \
+            --code-file /opt/fossignage/display_code \
+            -- :0 -nolisten tcp vt1
+        echo "Player exited; restarting in 5s... (Ctrl+C within 5s to get a shell)"
+        sleep 5
+    done
+fi
+EOF
+chown ${SERVICE_USER}:${SERVICE_USER} /home/${SERVICE_USER}/.bash_profile
+
+# ---------------------------------------------------------------------------
 # systemd: backend server
 # ---------------------------------------------------------------------------
 echo "==> Creating systemd services..."
@@ -97,47 +138,20 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# ---------------------------------------------------------------------------
-# systemd: X session + fullscreen native player
-# ---------------------------------------------------------------------------
-cat > /etc/systemd/system/fossignage-player.service <<EOF
-[Unit]
-Description=Fossignage native display player (X + fullscreen)
-After=fossignage-server.service graphical.target
-Wants=fossignage-server.service
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-PAMName=login
-WorkingDirectory=${INSTALL_DIR}
-Environment=SIGNAGE_SERVER=http://127.0.0.1:${SERVER_PORT}
-Environment=SIGNAGE_CODE_FILE=${INSTALL_DIR}/display_code
-Environment=HOME=/home/${SERVICE_USER}
-# X needs to know which tty/auth to use when started from systemd
-UtmpIdentifier=tty1
-StandardInput=tty
-TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
-# Start X on tty1, then run the player fullscreen inside it (standalone mode:
-# no pairing, idle screen shows the server address)
-ExecStart=/usr/bin/xinit ${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/player.py --standalone --server http://127.0.0.1:${SERVER_PORT} --code-file ${INSTALL_DIR}/display_code -- :0 -nolisten tcp vt1
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=graphical.target
-EOF
-
 systemctl daemon-reload
-systemctl enable fossignage-server.service fossignage-player.service
+systemctl enable fossignage-server.service
+
+# Drop the old player unit if it exists from a previous install
+if systemctl list-unit-files | grep -q fossignage-player; then
+  systemctl disable --now fossignage-player.service 2>/dev/null || true
+  rm -f /etc/systemd/system/fossignage-player.service
+  systemctl daemon-reload
+fi
 
 echo "==> Starting services..."
 systemctl restart fossignage-server.service
-systemctl restart fossignage-player.service
+# getty@tty1 restart triggers the autologin, which starts the player
+systemctl restart getty@tty1.service
 
 cat <<EOF
 
@@ -146,7 +160,7 @@ cat <<EOF
 
  Backend:      http://$(hostname -I | awk '{print $1}'):${SERVER_PORT}/operator
  Mode:         STANDALONE (no display linking; content plays directly)
- Player:       fossignage-player.service (X + fullscreen)
+ Player:       autologin on tty1 -> X + fullscreen player
  Server:       fossignage-server.service (Flask)
 
  Upload media and build a playlist on the operator console; the
@@ -154,9 +168,8 @@ cat <<EOF
 
  Useful commands:
    sudo systemctl status fossignage-server
-   sudo systemctl status fossignage-player
-   sudo journalctl -u fossignage-player -f
+   sudo systemctl restart getty@tty1      # restart the player session
    # forget pairing / re-pair:
-   sudo rm ${INSTALL_DIR}/display_code && sudo systemctl restart fossignage-player
+   sudo rm ${INSTALL_DIR}/display_code && sudo systemctl restart getty@tty1
 -------------------------------------------------------------
 EOF
