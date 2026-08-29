@@ -193,15 +193,18 @@ class NativePlayer:
         if code:
             heading = "Fossignage Display - enter this code on the Operator Console:"
             big_text = code
+            big_size = 220
         else:
             heading = "Fossignage Standalone Display - upload content at:"
             big_text = display_addr or self.server
+            # Shrink long URLs so they fit on screen (1920px wide card)
+            big_size = max(48, min(160, int(1700 * 1.9 / max(len(big_text), 1))))
         cmd = [
             convert,
             "-size", "1920x1080", "xc:#0f172a",
             "-font", "DejaVu-Sans", "-pointsize", "40", "-fill", "#94a3b8",
             "-gravity", "center", "-annotate", "+0-160", heading,
-            "-pointsize", "160", "-fill", "#38bdf8",
+            "-pointsize", str(big_size), "-fill", "#38bdf8",
             "-annotate", "+0+40", big_text,
             path,
         ]
