@@ -39,6 +39,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
   python3 python3-pip \
+  passwd \
   xserver-xorg xinit xterm \
   feh fbi \
   imagemagick \
