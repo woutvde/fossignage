@@ -19,6 +19,9 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'ogg',
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+# Standalone mode: no display linking. Displays that register are linked
+# automatically; the operator page hides the pairing UI (see /api/state).
+app.config['STANDALONE'] = os.environ.get('SIGNAGE_STANDALONE', '0') == '1'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- IN-MEMORY STATE STORE ---
@@ -111,6 +114,7 @@ def get_state():
         })
 
     return jsonify({
+        "standalone": app.config.get('STANDALONE', False),
         "displays": formatted_displays,
         "media": state['media'],
         "playlists": state['playlists']
@@ -131,7 +135,7 @@ def register_display():
     code = generate_display_code()
     new_display = {
         "code": code,
-        "linked": False,
+        "linked": app.config.get('STANDALONE', False),
         "active_playlist_id": None,
         "last_seen": time.time()
     }
@@ -178,6 +182,9 @@ def poll_display(code_id):
 
 @app.route('/api/link_display', methods=['POST'])
 def link_display():
+    if app.config.get('STANDALONE', False):
+        return jsonify({"success": False,
+                        "message": "Standalone mode: displays are linked automatically."}), 403
     data = request.json or {}
     code = data.get('code', '').strip().upper()
     if not code or len(code) != 4:
@@ -193,6 +200,9 @@ def link_display():
 
 @app.route('/api/unlink_display', methods=['POST'])
 def unlink_display():
+    if app.config.get('STANDALONE', False):
+        return jsonify({"success": False,
+                        "message": "Standalone mode: display linking is disabled."}), 403
     data = request.json or {}
     code = data.get('code', '').upper()
     display = next((d for d in state['displays'] if d['code'] == code), None)
@@ -325,15 +335,29 @@ def delete_media():
     return jsonify({"success": True})
 
 if __name__ == '__main__':
-    host = os.environ.get('SIGNAGE_HOST', '0.0.0.0')
-    port = int(os.environ.get('SIGNAGE_PORT', '5000'))
-    debug = os.environ.get('SIGNAGE_DEBUG', '0') == '1'
+    import argparse
+    parser = argparse.ArgumentParser(description='Fossignage signage server')
+    parser.add_argument('--standalone', action='store_true',
+                        help='Standalone mode: disable display linking; '
+                             'displays register and are linked automatically')
+    parser.add_argument('--host', default=os.environ.get('SIGNAGE_HOST', '0.0.0.0'))
+    parser.add_argument('--port', type=int, default=int(os.environ.get('SIGNAGE_PORT', '5000')))
+    parser.add_argument('--debug', action='store_true',
+                        default=os.environ.get('SIGNAGE_DEBUG', '0') == '1')
+    args = parser.parse_args()
+
+    if args.standalone:
+        app.config['STANDALONE'] = True
 
     print("\n-------------------------------------------------------------")
     print(" Digital Signage Server Started!")
-    print(f" - Operator Console: http://127.0.0.1:{port}/operator")
-    print(f" - Display Player:    http://127.0.0.1:{port}/display")
+    if app.config['STANDALONE']:
+        print(" Mode:              STANDALONE (display linking disabled)")
+        print(f" Upload content at: http://<this-host>:{args.port}/operator")
+    else:
+        print(f" - Operator Console: http://127.0.0.1:{args.port}/operator")
+        print(f" - Display Player:    http://127.0.0.1:{args.port}/display")
     print(" - Storage File:     data.json")
     print(" - Uploads Path:     static/media/")
     print("-------------------------------------------------------------\n")
-    app.run(host=host, port=port, debug=debug)
+    app.run(host=args.host, port=args.port, debug=args.debug)

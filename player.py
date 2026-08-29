@@ -1,0 +1,465 @@
+#!/usr/bin/env python3
+"""
+Fossignage native display player.
+
+A low-resource, dependency-free (stdlib only) player for single-system
+installs (e.g. a Raspberry Pi running Raspbian Lite). It talks to the same
+Flask backend (app.py) that the browser display client uses:
+
+  - POST /api/display/register   (pair / reconnect with a 4-char code)
+  - GET  /api/display/<code>     (poll playlist + heartbeat)
+  - POST /api/unlink_display     (optional, via --unlink)
+
+Playback is delegated to native processes so there is no browser overhead:
+
+  - video : omxplayer (Pi HW accel) -> vlc -> ffplay
+  - image : feh (X) -> fbi (console framebuffer)
+  - url   : chromium --kiosk (optional, heavy)
+
+The pairing code is persisted to a file so the display survives reboots
+without re-pairing, mirroring the browser client's localStorage behaviour.
+
+Usage:
+  python3 player.py [--server http://127.0.0.1:5000] [--code-file PATH]
+                    [--poll-interval 2] [--unlink] [--debug]
+"""
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+
+# ---------------------------------------------------------------- defaults
+
+DEFAULT_SERVER = os.environ.get("SIGNAGE_SERVER", "http://127.0.0.1:5000")
+DEFAULT_CODE_FILE = os.environ.get("SIGNAGE_CODE_FILE",
+                                   os.path.expanduser("~/.fossignage_display_code"))
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+VIDEO_EXTS = (".mp4", ".webm", ".ogg", ".mov", ".mkv", ".avi")
+
+
+def log(msg):
+    print(f"[player] {time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+
+def http_json(url, payload=None, timeout=5):
+    """GET (payload=None) or POST JSON, returning parsed JSON. Raises on failure."""
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+    if data:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode())
+
+
+# ---------------------------------------------------------------- players
+
+def find_binary(*names):
+    for name in names:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+class NativePlayer:
+    """Owns the subprocess (or timer) currently rendering an item."""
+
+    def __init__(self, server, standalone=False):
+        self.server = server
+        self.standalone = standalone
+        self.proc = None          # subprocess currently on screen
+        self.timer = None         # threading.Timer for image/url durations
+        self._lock = threading.Lock()
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def stop(self):
+        with self._lock:
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+            if self.proc:
+                try:
+                    # Terminate the whole process group (omxplayer spawns children)
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        self.proc.terminate()
+                    except OSError:
+                        pass
+                try:
+                    self.proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                    except OSError:
+                        pass
+                self.proc = None
+
+    def _start(self, cmd, wait_for_exit=False):
+        log("exec: " + " ".join(cmd))
+        kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                      start_new_session=True)
+        try:
+            self.proc = subprocess.Popen(cmd, **kwargs)
+        except OSError as e:
+            log(f"failed to launch {cmd[0]}: {e}")
+            self.proc = None
+            return False
+        if wait_for_exit:
+            threading.Thread(target=self._wait_video, args=(self.proc,),
+                             daemon=True).start()
+        return True
+
+    def _wait_video(self, proc):
+        """Advance the playlist when the video process exits naturally."""
+        proc.wait()
+        with self._lock:
+            if self.proc is proc:  # not superseded by a stop()/new item
+                self.proc = None
+        self.on_video_end()
+
+    # -- rendering ---------------------------------------------------------
+
+    def show_idle(self, code):
+        """Full-screen status card: pairing code, or server address in
+        standalone mode."""
+        self.stop()
+        if self.standalone:
+            img = self._render_idle_image(None)
+        else:
+            img = self._render_idle_image(code)
+        if not img:
+            if self.standalone:
+                log(f"idle: waiting for content (server {self.server})")
+            else:
+                log(f"idle: waiting for pairing (code {code})")
+            return
+        feh = find_binary("feh")
+        fbi = find_binary("fbi")
+        if feh:
+            self._start([feh, "-F", "-Z", "-Y", "--hide-pointer", img])
+        elif fbi:
+            env = dict(os.environ, TTY="/dev/tty1")
+            try:
+                self.proc = subprocess.Popen(
+                    [fbi, "-T", "1", "-d", "/dev/fb0", "-noverbose", "-a", img],
+                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True)
+            except OSError:
+                self.proc = None
+        else:
+            log(f"idle (no image viewer found): code {code}")
+
+    def _render_idle_image(self, code):
+        """Render a dark card with the pairing code (or server address in
+        standalone mode) using ImageMagick if present."""
+        convert = find_binary("convert", "magick")
+        if not convert:
+            return None
+        path = os.path.join(tempfile.gettempdir(), "fossignage_idle.png")
+        if code:
+            heading = "Fossignage Display - enter this code on the Operator Console:"
+            big_text = code
+        else:
+            heading = "Fossignage Standalone Display - upload content at:"
+            big_text = self.server
+        cmd = [
+            convert,
+            "-size", "1920x1080", "xc:#0f172a",
+            "-font", "DejaVu-Sans", "-pointsize", "40", "-fill", "#94a3b8",
+            "-gravity", "center", "-annotate", "+0-160", heading,
+            "-pointsize", "160", "-fill", "#38bdf8",
+            "-annotate", "+0+40", big_text,
+            path,
+        ]
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=10, check=True)
+            return path
+        except (subprocess.SubprocessError, OSError):
+            return None
+
+    def show_item(self, item, single_item_playlist):
+        url = item.get("url", "")
+        mtype = item.get("type", "")
+        duration = int(item.get("duration") or 8)
+        self.stop()
+
+        if mtype == "video" or url.lower().endswith(VIDEO_EXTS):
+            self._play_video(url, loop=single_item_playlist)
+        elif url.lower().endswith(IMAGE_EXTS):
+            self._show_image(url, duration)
+        else:
+            self._show_url(url, duration)
+
+    def _play_video(self, url, loop):
+        full_url = url if url.startswith("http") else self.server + url
+        omx = find_binary("omxplayer")
+        vlc = find_binary("vlc")
+        ffplay = find_binary("ffplay")
+        if omx:
+            cmd = [omx, "--no-osd", "--blank", "-o", "both", full_url]
+            if loop:
+                cmd.insert(1, "--loop")
+        elif vlc:
+            cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
+                   "--fullscreen", "--play-and-exit"]
+            if loop:
+                cmd.append("--loop")
+            cmd.append(full_url)
+        elif ffplay:
+            cmd = [ffplay, "-noborder", "-alwaysontop", "-autoexit",
+                   "-loglevel", "quiet", "-window_title", "fossignage"]
+            if loop:
+                cmd.append("-loop")
+                cmd.append("0")
+            cmd.append(full_url)
+        else:
+            log("no video player found (install omxplayer, vlc or ffmpeg)")
+            self.on_video_end()
+            return
+        self._start(cmd, wait_for_exit=True)
+
+    def _show_image(self, url, duration):
+        local = self._ensure_local(url)
+        if not local:
+            self.on_video_end()
+            return
+        feh = find_binary("feh")
+        fbi = find_binary("fbi")
+        if feh:
+            ok = self._start([feh, "-F", "-Z", "-Y", "--hide-pointer", local])
+        elif fbi:
+            ok = self._start([fbi, "-T", "1", "-d", "/dev/fb0", "-noverbose",
+                              "-a", local])
+        else:
+            log("no image viewer found (install feh or fbi)")
+            ok = False
+        if ok:
+            self.timer = threading.Timer(duration, self.on_video_end)
+            self.timer.daemon = True
+            self.timer.start()
+
+    def _show_url(self, url, duration):
+        chromium = find_binary("chromium", "chromium-browser", "google-chrome")
+        if not chromium:
+            log(f"no chromium found; cannot display URL {url}")
+            self.on_video_end()
+            return
+        cmd = [chromium, "--kiosk", "--noerrdialogs", "--disable-infobars",
+               "--disable-session-crashed-bubble", "--no-first-run",
+               "--disable-gpu" if not find_binary("omxplayer") else "--enable-gpu-rasterization",
+               "--check-for-update-interval=31536000", url]
+        if self._start(cmd):
+            self.timer = threading.Timer(duration, self.on_video_end)
+            self.timer.daemon = True
+            self.timer.start()
+
+    def _ensure_local(self, url):
+        """Download server-hosted media to a temp file so viewers can read it."""
+        if url.startswith("http"):
+            full_url = url
+        else:
+            full_url = self.server + url
+        try:
+            ext = os.path.splitext(full_url.split("?")[0])[1] or ".img"
+            fd, path = tempfile.mkstemp(suffix=ext, prefix="fossignage_")
+            os.close(fd)
+            with urllib.request.urlopen(full_url, timeout=15) as resp, open(path, "wb") as f:
+                f.write(resp.read())
+            return path
+        except (urllib.error.URLError, OSError) as e:
+            log(f"failed to download {full_url}: {e}")
+            return None
+
+
+
+# ---------------------------------------------------------------- main loop
+
+class DisplayClient:
+    def __init__(self, server, code_file, poll_interval, standalone=False,
+                 debug=False):
+        self.server = server.rstrip("/")
+        self.code_file = code_file
+        self.poll_interval = poll_interval
+        self.standalone = standalone
+        self.debug = debug
+        self.code = self._load_code()
+        self.player = NativePlayer(self.server, standalone)
+        self.player.on_video_end = self.advance
+        self.items = []
+        self.index = 0
+        self.signature = None
+        self.state = "idle"  # idle | ready | playing
+
+    # -- code persistence ----------------------------------------------------
+
+    def _load_code(self):
+        try:
+            with open(self.code_file) as f:
+                code = f.read().strip().upper()
+                if len(code) == 4:
+                    return code
+        except OSError:
+            pass
+        return None
+
+    def _save_code(self, code):
+        try:
+            with open(self.code_file, "w") as f:
+                f.write(code)
+        except OSError as e:
+            log(f"could not persist code: {e}")
+
+    # -- server communication --------------------------------------------------
+
+    def register(self):
+        payload = {"code": self.code or ""}
+        if self.standalone:
+            payload["standalone"] = True
+        try:
+            data = http_json(f"{self.server}/api/display/register", payload)
+        except (urllib.error.URLError, OSError) as e:
+            log(f"server unreachable ({e}); retrying...")
+            return False
+        self.code = data["code"]
+        self._save_code(self.code)
+        if self.standalone:
+            log(f"registered as display {self.code} (standalone, auto-linked)")
+        else:
+            log(f"registered as display {self.code}"
+                + (" (reconnected)" if data.get("reconnected") else " (new pairing code)"))
+        return True
+
+    def poll(self):
+        try:
+            data = http_json(f"{self.server}/api/display/{self.code}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                log("server lost our code; re-registering")
+                self.code = None
+                self.register()
+            return
+        except (urllib.error.URLError, OSError) as e:
+            if self.debug:
+                log(f"poll error: {e}")
+            return
+
+        if not data.get("linked"):
+            self._set_state("idle")
+            return
+        media = data.get("media") or []
+        if not media:
+            self._set_state("ready")
+            return
+
+        sig = json.dumps([data.get("active_playlist_id"), media], sort_keys=True)
+        if sig != self.signature:
+            self.signature = sig
+            self.items = media
+            self.index = 0
+            self._play_current()
+        elif self.state != "playing":
+            # Same playlist as before but playback was interrupted (e.g. reboot)
+            self._play_current()
+
+    def _set_state(self, new_state):
+        if new_state == self.state:
+            return
+        self.state = new_state
+        if new_state == "idle":
+            self.player.stop()
+            self.player.show_idle(self.code or "----")
+        elif new_state == "ready":
+            self.player.stop()
+            self.player.show_idle(self.code or "----")
+        self.signature = None if new_state != "playing" else self.signature
+
+    # -- playback ----------------------------------------------------------------
+
+    def _play_current(self):
+        if not self.items:
+            return
+        item = self.items[self.index]
+        single = len(self.items) == 1
+        log(f"playing [{self.index + 1}/{len(self.items)}] "
+            f"{item.get('name')} ({item.get('type')})")
+        self.state = "playing"
+        self.player.show_item(item, single)
+
+    def advance(self):
+        """Called when the current item finishes (video end / image timer)."""
+        if self.state != "playing" or not self.items:
+            return
+        self.index = (self.index + 1) % len(self.items)
+        self._play_current()
+
+    # -- run loop -------------------------------------------------------------------
+
+    def run(self):
+        while not self.code:
+            if self.register():
+                break
+            time.sleep(3)
+        if not self.code:
+            return
+
+        self.player.show_idle(self.code)
+        while True:
+            try:
+                self.poll()
+            except Exception as e:  # never let the loop die
+                log(f"unexpected error in poll loop: {e}")
+            time.sleep(self.poll_interval)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Fossignage native display player")
+    ap.add_argument("--server", default=DEFAULT_SERVER)
+    ap.add_argument("--code-file", default=DEFAULT_CODE_FILE)
+    ap.add_argument("--poll-interval", type=float, default=2.0)
+    ap.add_argument("--standalone", action="store_true",
+                    help="standalone mode: no pairing; idle screen shows the "
+                         "server address instead of a pairing code")
+    ap.add_argument("--unlink", action="store_true",
+                    help="unlink this display from the server and exit")
+    ap.add_argument("--debug", action="store_true")
+    args = ap.parse_args()
+
+    client = DisplayClient(args.server, args.code_file, args.poll_interval,
+                           args.standalone, args.debug)
+
+    if args.unlink:
+        if client.code:
+            try:
+                http_json(f"{client.server}/api/unlink_display",
+                          {"code": client.code})
+                log(f"unlinked display {client.code}")
+            except (urllib.error.URLError, OSError) as e:
+                log(f"unlink failed: {e}")
+        try:
+            os.remove(args.code_file)
+        except OSError:
+            pass
+        return
+
+    log(f"starting native player -> {args.server}")
+    try:
+        client.run()
+    except KeyboardInterrupt:
+        log("stopping")
+        client.player.stop()
+
+
+if __name__ == "__main__":
+    main()

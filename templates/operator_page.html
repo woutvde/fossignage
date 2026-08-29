@@ -377,8 +377,8 @@
                 <span id="displayCountBadge" style="background:#334155; color:#38bdf8; font-size:11px; padding:2px 8px; border-radius:12px;">0 Online</span>
             </h2>
 
-            <!-- Pair Display Form -->
-            <div style="display: flex; gap: 8px;">
+            <!-- Pair Display Form (hidden in standalone mode) -->
+            <div id="pairFormRow" style="display: flex; gap: 8px;">
                 <input type="text" id="playerCodeInput" placeholder="4-Letter Code" maxlength="4" style="text-transform: uppercase; letter-spacing: 2px; font-weight: bold; font-family: monospace;">
                 <button class="btn btn-primary" onclick="linkPlayer()">Pair Screen</button>
             </div>
@@ -473,6 +473,7 @@
 
     <script>
         let state = { displays: [], media: [], playlists: [] };
+        let standaloneMode = false;
         let activePlaylistId = 'new';
         let activePlaylistItems = [];
         let currentFilter = 'all';
@@ -532,6 +533,11 @@
                 const res = await fetch('/api/state');
                 state = await res.json();
 
+                if (state.standalone !== standaloneMode) {
+                    standaloneMode = !!state.standalone;
+                    applyStandaloneMode();
+                }
+
                 for (let m of state.media) {
                     if (m.type === 'video' && !m.duration) {
                         m.duration = await detectVideoDuration(m.url);
@@ -549,10 +555,12 @@
 
                 // Only re-render displays when their data actually changes, so an
                 // open dropdown isn't closed by the 2s poll rebuilding the DOM.
-                const currentDisplaysHash = JSON.stringify(state.displays);
-                if (currentDisplaysHash !== lastDisplaysHash) {
-                    lastDisplaysHash = currentDisplaysHash;
-                    renderDisplays();
+                if (!standaloneMode) {
+                    const currentDisplaysHash = JSON.stringify(state.displays);
+                    if (currentDisplaysHash !== lastDisplaysHash) {
+                        lastDisplaysHash = currentDisplaysHash;
+                        renderDisplays();
+                    }
                 }
 
                 // Only re-render the playlist dropdown when the playlist collection changes,
@@ -603,6 +611,30 @@
         }
 
         /* --- DISPLAY MANAGEMENT --- */
+        function applyStandaloneMode() {
+            // In standalone mode there is no pairing: hide the pair form and
+            // the display list; the panel becomes an info card instead.
+            const panel = document.querySelector('.dashboard-grid .panel');
+            const pairRow = document.getElementById('pairFormRow');
+            const list = document.getElementById('displaysList');
+            const badge = document.getElementById('displayCountBadge');
+            if (standaloneMode) {
+                pairRow.style.display = 'none';
+                list.innerHTML = `
+                    <div class="empty-state">
+                        <strong>Standalone Mode</strong><br>
+                        This system plays its own playlist directly.<br>
+                        Upload media and build a playlist below — playback
+                        starts automatically.
+                    </div>`;
+                if (badge) badge.style.display = 'none';
+            } else {
+                pairRow.style.display = 'flex';
+                if (badge) badge.style.display = '';
+                renderDisplays();
+            }
+        }
+
         async function linkPlayer() {
             const rawCode = document.getElementById('playerCodeInput').value.trim().toUpperCase();
             if (!rawCode) return alert('Enter a 4-character screen code.');
