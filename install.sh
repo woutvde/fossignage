@@ -32,22 +32,24 @@ echo "==> Installing system packages (this can take a few minutes)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  python3 python3-pip python3-venv \
+  python3 python3-pip \
   xserver-xorg xinit xterm \
   feh fbi \
-  omxplayer \
   imagemagick \
   fonts-dejavu-core \
   chromium \
   ffmpeg \
-  vlc \
-  autohide-panel 2>/dev/null || true
+  vlc
 
 # omxplayer is not available on newer (bookworm+) releases; that's fine,
 # the player falls back to vlc/ffplay automatically.
-if ! command -v omxplayer >/dev/null 2>&1; then
-  echo "    (omxplayer unavailable - will use vlc/ffplay for video)"
-fi
+apt-get install -y --no-install-recommends omxplayer 2>/dev/null \
+  || echo "    (omxplayer unavailable - will use vlc/ffplay for video)"
+
+# Debian 12+: python3-venv is versioned (e.g. python3.13-venv) and the
+# meta-package may not pull the real one. Detect the running interpreter.
+PYV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')
+apt-get install -y "${PYV}" || apt-get install -y python3-venv
 
 echo "==> Deploying code to ${INSTALL_DIR}..."
 mkdir -p "$INSTALL_DIR/static/media" "$INSTALL_DIR/templates"
