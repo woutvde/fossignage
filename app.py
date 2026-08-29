@@ -28,7 +28,8 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 state = {
     "displays": [],
     "media": [],
-    "playlists": []
+    "playlists": [],
+    "standalone_playlist_id": None
 }
 
 # --- PERSISTENCE HELPERS ---
@@ -41,6 +42,7 @@ def load_state():
                 state["displays"] = loaded.get("displays", [])
                 state["media"] = loaded.get("media", [])
                 state["playlists"] = loaded.get("playlists", [])
+                state["standalone_playlist_id"] = loaded.get("standalone_playlist_id")
                 print(f"[STORAGE] State loaded successfully from {DATA_FILE}")
         except Exception as e:
             print(f"[STORAGE] Error loading data.json: {e}")
@@ -115,6 +117,7 @@ def get_state():
 
     return jsonify({
         "standalone": app.config.get('STANDALONE', False),
+        "standalone_playlist_id": state.get('standalone_playlist_id'),
         "displays": formatted_displays,
         "media": state['media'],
         "playlists": state['playlists']
@@ -157,8 +160,14 @@ def poll_display(code_id):
     if not display.get('linked', False):
         return jsonify({"linked": False, "code": code_id})
 
-    # Resolve active playlist content
-    active_playlist = next((p for p in state['playlists'] if p['id'] == display.get('active_playlist_id')), None)
+    # Resolve active playlist content. In standalone mode there is no display
+    # assignment UI: fall back to the globally selected (or first) playlist.
+    playlist_id = display.get('active_playlist_id')
+    if app.config.get('STANDALONE', False) and not playlist_id:
+        playlist_id = state.get('standalone_playlist_id') \
+            or (state['playlists'][0]['id'] if state['playlists'] else None)
+
+    active_playlist = next((p for p in state['playlists'] if p['id'] == playlist_id), None)
     
     enriched_media = []
     if active_playlist and 'items' in active_playlist:
@@ -227,6 +236,20 @@ def activate_playlist():
         return jsonify({"success": True})
 
     return jsonify({"success": False, "message": "Display not found"}), 404
+
+@app.route('/api/set_active_playlist', methods=['POST'])
+def set_active_playlist():
+    """Standalone mode: choose which playlist the local player plays."""
+    if not app.config.get('STANDALONE', False):
+        return jsonify({"success": False,
+                        "message": "Only available in standalone mode."}), 403
+    data = request.json or {}
+    playlist_id = data.get('playlist_id')
+    if playlist_id and not any(p['id'] == playlist_id for p in state['playlists']):
+        return jsonify({"success": False, "message": "Playlist not found."}), 404
+    state['standalone_playlist_id'] = playlist_id
+    save_state()
+    return jsonify({"success": True})
 
 @app.route('/api/save_playlist', methods=['POST'])
 def save_playlist():

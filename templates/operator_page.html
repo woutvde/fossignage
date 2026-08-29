@@ -383,6 +383,14 @@
                 <button class="btn btn-primary" onclick="linkPlayer()">Pair Screen</button>
             </div>
 
+            <!-- Standalone: playlist selector shown on the local screen -->
+            <div id="standalonePlaylistRow" style="display: none;">
+                <label style="font-size: 11px; color: #94a3b8; display: block; margin-bottom: 4px;">Playlist shown on this screen:</label>
+                <select id="standalonePlaylistSelect" onchange="setStandalonePlaylist(this.value)">
+                    <!-- Populated dynamically -->
+                </select>
+            </div>
+
             <!-- Linked Displays List -->
             <div id="displaysList" style="display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: 540px;">
                 <!-- Populated dynamically -->
@@ -561,6 +569,8 @@
                         lastDisplaysHash = currentDisplaysHash;
                         renderDisplays();
                     }
+                } else {
+                    renderStandalonePlaylistSelect();
                 }
 
                 // Only re-render the playlist dropdown when the playlist collection changes,
@@ -613,26 +623,50 @@
         /* --- DISPLAY MANAGEMENT --- */
         function applyStandaloneMode() {
             // In standalone mode there is no pairing: hide the pair form and
-            // the display list; the panel becomes an info card instead.
-            const panel = document.querySelector('.dashboard-grid .panel');
+            // the display list; the panel becomes a playlist selector instead.
             const pairRow = document.getElementById('pairFormRow');
             const list = document.getElementById('displaysList');
+            const saRow = document.getElementById('standalonePlaylistRow');
             const badge = document.getElementById('displayCountBadge');
+            const panelTitle = document.querySelector('.dashboard-grid .panel h2 span');
             if (standaloneMode) {
                 pairRow.style.display = 'none';
+                saRow.style.display = 'block';
+                if (panelTitle) panelTitle.innerText = 'This Screen';
+                if (badge) badge.style.display = 'none';
                 list.innerHTML = `
                     <div class="empty-state">
                         <strong>Standalone Mode</strong><br>
-                        This system plays its own playlist directly.<br>
-                        Upload media and build a playlist below — playback
-                        starts automatically.
+                        Pick the playlist to show on this screen above, then
+                        edit it below. Changes appear automatically.
                     </div>`;
-                if (badge) badge.style.display = 'none';
             } else {
                 pairRow.style.display = 'flex';
+                saRow.style.display = 'none';
+                if (panelTitle) panelTitle.innerText = 'Active Displays';
                 if (badge) badge.style.display = '';
                 renderDisplays();
             }
+        }
+
+        function setStandalonePlaylist(playlistId) {
+            fetch('/api/set_active_playlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ playlist_id: playlistId || null })
+            }).then(r => r.json()).then(data => {
+                if (!data.success) alert(data.message);
+            });
+        }
+
+        function renderStandalonePlaylistSelect() {
+            const select = document.getElementById('standalonePlaylistSelect');
+            if (!select) return;
+            const active = state.standalone_playlist_id
+                || (state.playlists[0] && state.playlists[0].id) || '';
+            select.innerHTML = state.playlists.map(p => `
+                <option value="${escapeHtml(p.id)}" ${p.id === active ? 'selected' : ''}>${escapeHtml(p.name)}</option>
+            `).join('') || '<option value="">No playlists yet</option>';
         }
 
         async function linkPlayer() {

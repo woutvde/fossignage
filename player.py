@@ -29,6 +29,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,18 @@ VIDEO_EXTS = (".mp4", ".webm", ".ogg", ".mov", ".mkv", ".avi")
 
 def log(msg):
     print(f"[player] {time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+
+def get_lan_ip():
+    """Best-effort local network IP (no traffic actually sent)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))  # never sends packets; just picks a route
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
 
 
 def http_json(url, payload=None, timeout=5):
@@ -135,7 +148,17 @@ class NativePlayer:
         standalone mode."""
         self.stop()
         if self.standalone:
-            img = self._render_idle_image(None)
+            # Replace loopback with the machine's LAN IP so the address is
+            # actually usable from another computer.
+            from urllib.parse import urlparse
+            parsed = urlparse(self.server)
+            host = parsed.hostname
+            if host in ("127.0.0.1", "localhost", "0.0.0.0"):
+                port = parsed.port or 80
+                display_addr = f"http://{get_lan_ip()}:{port}"
+            else:
+                display_addr = self.server
+            img = self._render_idle_image(None, display_addr)
         else:
             img = self._render_idle_image(code)
         if not img:
@@ -160,7 +183,7 @@ class NativePlayer:
         else:
             log(f"idle (no image viewer found): code {code}")
 
-    def _render_idle_image(self, code):
+    def _render_idle_image(self, code, display_addr=None):
         """Render a dark card with the pairing code (or server address in
         standalone mode) using ImageMagick if present."""
         convert = find_binary("convert", "magick")
@@ -172,7 +195,7 @@ class NativePlayer:
             big_text = code
         else:
             heading = "Fossignage Standalone Display - upload content at:"
-            big_text = self.server
+            big_text = display_addr or self.server
         cmd = [
             convert,
             "-size", "1920x1080", "xc:#0f172a",
