@@ -56,10 +56,9 @@ spinner() {
     echo "${C_DIM}---- command output ----${C_OFF}" >&2
     cat "$tmp" >&2
     echo "${C_DIM}------------------------${C_OFF}" >&2
-    rm -f "$tmp"
-    fail "$msg"
   fi
   rm -f "$tmp"
+  return $rc
 }
 
 # --- preflight --------------------------------------------------------------
@@ -83,6 +82,27 @@ echo "${C_DIM}  target: ${INSTALL_DIR}   user: ${SERVICE_USER}   port: ${SERVER_
 step "Installing required packages"
 export DEBIAN_FRONTEND=noninteractive
 spinner "updating package index"   apt-get update -y
+
+# Video player choice depends on OS generation:
+#   - Raspberry Pi OS / Raspbian Bullseye or older: omxplayer (hw-accelerated)
+#   - Debian/Ubuntu Bullseye+ and Pi OS Bookworm+: VLC + ffplay
+#     (omxplayer is discontinued and absent from these repos)
+OMX_AVAILABLE=0
+if grep -qs 'raspbian\|raspberry' /etc/os-release; then
+  . /etc/os-release
+  if [[ ${VERSION_ID:-0} -le 11 ]]; then
+    OMX_AVAILABLE=1
+  fi
+fi
+
+if [[ $OMX_AVAILABLE -eq 1 ]]; then
+  spinner "installing omxplayer (hw-accelerated video)" \
+    apt-get install -y --no-install-recommends omxplayer \
+    || info "omxplayer install failed - falling back to vlc/ffplay"
+else
+  info "skipping omxplayer (not available on this OS) - video will use vlc/ffplay"
+fi
+
 spinner "installing packages"      apt-get install -y --no-install-recommends \
   python3 python3-pip \
   passwd \
@@ -92,20 +112,16 @@ spinner "installing packages"      apt-get install -y --no-install-recommends \
   fonts-dejavu-core \
   chromium \
   ffmpeg \
+  mpv \
   vlc
 
-# omxplayer is not available on newer (bookworm+) releases; that's fine,
-# the player falls back to vlc/ffplay automatically.
-if ! spinner "installing omxplayer (optional)" \
-     apt-get install -y --no-install-recommends omxplayer; then
-  info "omxplayer unavailable - video will use vlc/ffplay"
-fi
-
-# Debian 12+: python3-venv is versioned (e.g. python3.13-venv) and the
-# meta-package may not pull the real one. Detect the running interpreter.
+# Debian 12+ and Ubuntu 24.04+: python3-venv is versioned
+# (e.g. python3.13-venv) and the meta-package may not pull the real one.
+# Detect the running interpreter; fall back to the meta-package.
 PYV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')
 spinner "installing ${PYV}" apt-get install -y "${PYV}" \
-  || spinner "installing python3-venv" apt-get install -y python3-venv
+  || spinner "installing python3-venv" apt-get install -y python3-venv \
+  || fail "could not install python3-venv"
 
 # --- service user -----------------------------------------------------------
 
@@ -127,10 +143,13 @@ spinner "copying files" bash -c \
    && { [[ ! -d '$SRC_DIR/static' ]] || cp -r '$SRC_DIR'/static/. '$INSTALL_DIR/static/'; }"
 
 step "Setting up python environment"
-spinner "creating venv" python3 -m venv "$INSTALL_DIR/venv"
-spinner "upgrading pip" "$INSTALL_DIR/venv/bin/pip" install --upgrade pip --quiet
+spinner "creating venv" python3 -m venv "$INSTALL_DIR/venv" \
+  || fail "venv creation failed (is python3-venv installed?)"
+spinner "upgrading pip" "$INSTALL_DIR/venv/bin/pip" install --upgrade pip --quiet \
+  || fail "pip upgrade failed"
 spinner "installing python dependencies" \
-  "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
+  "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet \
+  || fail "python dependency install failed"
 
 spinner "setting ownership" chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 

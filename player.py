@@ -43,7 +43,8 @@ import urllib.request
 DEFAULT_SERVER = os.environ.get("SIGNAGE_SERVER", "http://127.0.0.1:5000")
 DEFAULT_CODE_FILE = os.environ.get("SIGNAGE_CODE_FILE",
                                    os.path.expanduser("~/.fossignage_display_code"))
-IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+ANIMATED_EXTS = (".gif",)  # need a video-style player to animate
 VIDEO_EXTS = (".mp4", ".webm", ".ogg", ".mov", ".mkv", ".avi")
 
 
@@ -221,7 +222,9 @@ class NativePlayer:
         duration = int(item.get("duration") or 8)
         self.stop()
 
-        if mtype == "video" or url.lower().endswith(VIDEO_EXTS):
+        if mtype == "video" or url.lower().endswith(VIDEO_EXTS + ANIMATED_EXTS):
+            # Animated GIFs go through the video path too: feh/fbi only show
+            # the first frame, while mpv/vlc/ffplay animate them properly.
             self._play_video(url, loop=single_item_playlist)
         elif url.lower().endswith(IMAGE_EXTS):
             self._show_image(url, duration)
@@ -231,12 +234,17 @@ class NativePlayer:
     def _play_video(self, url, loop):
         full_url = url if url.startswith("http") else self.server + url
         omx = find_binary("omxplayer")
+        mpv = find_binary("mpv")
         vlc = find_binary("vlc")
         ffplay = find_binary("ffplay")
         if omx:
             cmd = [omx, "--no-osd", "--blank", "-o", "both", full_url]
             if loop:
                 cmd.insert(1, "--loop")
+        elif mpv:
+            cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
+                   "--loop-file=" + ("inf" if loop else "no"),
+                   "--really-quiet", full_url]
         elif vlc:
             cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
                    "--fullscreen", "--play-and-exit"]
