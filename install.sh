@@ -19,13 +19,19 @@
 set -euo pipefail
 
 INSTALL_DIR=/opt/fossignage
-SERVICE_USER=${SERVICE_USER:-pi}
+SERVICE_USER=${SERVICE_USER:-fossignage}
 SERVER_PORT=${SERVER_PORT:-5000}
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Please run as root: sudo bash $0" >&2
   exit 1
+fi
+
+# Dedicated system user to run the services (override with SERVICE_USER=x)
+if ! id "$SERVICE_USER" &>/dev/null; then
+  useradd --system --create-home --shell /bin/bash "$SERVICE_USER"
+  echo "==> Created service user: $SERVICE_USER"
 fi
 
 echo "==> Installing system packages (this can take a few minutes)..."
@@ -105,6 +111,12 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=SIGNAGE_SERVER=http://127.0.0.1:${SERVER_PORT}
 Environment=SIGNAGE_CODE_FILE=${INSTALL_DIR}/display_code
 Environment=HOME=/home/${SERVICE_USER}
+# X needs to know which tty/auth to use when started from systemd
+UtmpIdentifier=tty1
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
 # Start X on tty1, then run the player fullscreen inside it (standalone mode:
 # no pairing, idle screen shows the server address)
 ExecStart=/usr/bin/xinit ${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/player.py --standalone --server http://127.0.0.1:${SERVER_PORT} --code-file ${INSTALL_DIR}/display_code -- :0 -nolisten tcp vt1
