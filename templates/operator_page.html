@@ -529,7 +529,8 @@
                 </h2>
 
                 <!-- Add URL Row -->
-                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <!-- Add URL Row (hidden when the display has no browser) -->
+                <div id="addUrlRow" style="display: flex; gap: 8px; flex-wrap: wrap;">
                     <input type="text" id="mediaNameInput" placeholder="Media Title (e.g. Daily Promo)" style="flex: 1; min-width: 140px;">
                     <input type="url" id="mediaUrlInput" placeholder="https://example.com/banner.jpg" style="flex: 2; min-width: 180px;" onkeydown="if(event.key==='Enter')addUrlMedia()">
                     <button class="btn btn-primary" onclick="addUrlMedia()">Add URL</button>
@@ -547,7 +548,7 @@
                         <button class="tab-btn active" onclick="filterLibrary('all', this)">All Media</button>
                         <button class="tab-btn" onclick="filterLibrary('image', this)">Images</button>
                         <button class="tab-btn" onclick="filterLibrary('video', this)">Videos</button>
-                        <button class="tab-btn" onclick="filterLibrary('url', this)">Web Pages</button>
+                        <button class="tab-btn" id="urlTabBtn" onclick="filterLibrary('url', this)">Web Pages</button>
                     </div>
                     <input type="text" id="searchLibrary" placeholder="Search..." oninput="renderLibrary()" style="width: 180px; padding: 5px 10px;">
                 </div>
@@ -628,10 +629,12 @@
                 state = await res.json();
                 setBackendStatus(true);
                 if (state.upload_limits) uploadLimits = state.upload_limits;
+                if (typeof state.url_playback === 'boolean') applyUrlPlayback(state.url_playback);
 
                 if (state.standalone !== standaloneMode) {
                     standaloneMode = !!state.standalone;
                     applyStandaloneMode();
+                    applyUrlPlayback(!!state.url_playback);
                 }
 
                 for (let m of state.media) {
@@ -699,6 +702,26 @@
             dot.classList.toggle('offline', !ok);
             text.innerText = ok ? 'Backend Connected' : 'Backend Disconnected';
             text.style.color = ok ? '#34d399' : '#ef4444';
+        }
+
+        /* --- URL PLAYBACK AVAILABILITY --- */
+        let urlPlaybackVisible = true;
+
+        function applyUrlPlayback(available) {
+            // URL items are only ever rendered by the native player, which
+            // needs chromium locally. In classic mode displays are browser
+            // tabs that render URLs in an iframe themselves — always allow.
+            const effective = standaloneMode ? available : true;
+            if (effective === urlPlaybackVisible) return;
+            urlPlaybackVisible = effective;
+            document.getElementById('addUrlRow').style.display = effective ? 'flex' : 'none';
+            document.getElementById('urlTabBtn').style.display = effective ? '' : 'none';
+            // If we're currently filtered to URLs and they become unavailable,
+            // fall back to showing all media.
+            if (!effective && currentFilter === 'url') {
+                filterLibrary('all', document.querySelector('.tab-btn'));
+            }
+            renderLibrary();
         }
 
         function detectVideoDuration(url) {

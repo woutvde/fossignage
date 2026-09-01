@@ -33,13 +33,17 @@ GOOD_VIDEO_CODECS = {'h264'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+# Standalone mode: no display linking. Displays that register are linked
+# automatically; the operator page hides the pairing UI (see /api/state).
+app.config['STANDALONE'] = os.environ.get('SIGNAGE_STANDALONE', '0') == '1'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- IN-MEMORY STATE STORE ---
 state = {
     "displays": [],
     "media": [],
-    "playlists": []
+    "playlists": [],
+    "standalone_playlist_id": None
 }
 
 # Background transcode jobs: media_id -> {"progress": 0-100, "error": str|None}
@@ -55,6 +59,7 @@ def load_state():
                 state["displays"] = loaded.get("displays", [])
                 state["media"] = loaded.get("media", [])
                 state["playlists"] = loaded.get("playlists", [])
+                state["standalone_playlist_id"] = loaded.get("standalone_playlist_id")
                 print(f"[STORAGE] State loaded successfully from {DATA_FILE}")
         except Exception as e:
             print(f"[STORAGE] Error loading data.json: {e}")
@@ -204,6 +209,8 @@ def get_state():
         })
 
     resp = {
+        "standalone": app.config.get('STANDALONE', False),
+        "standalone_playlist_id": state.get('standalone_playlist_id'),
         "displays": formatted_displays,
         "media": state['media'],
         "playlists": state['playlists']
@@ -214,6 +221,15 @@ def get_state():
         "max": MAX_CONTENT_LENGTH,
         "free": free if free is not None else float('inf'),
     }
+    # URL/web-page playback only needs a browser on the *display* machine.
+    # In classic mode the display is a browser tab (renders URLs in an
+    # iframe), so URLs always work. In standalone mode the native player
+    # shells out to chromium, so it depends on it being installed.
+    resp['url_playback'] = True
+    if app.config.get('STANDALONE', False):
+        resp['url_playback'] = bool(shutil.which('chromium')
+                                    or shutil.which('chromium-browser')
+                                    or shutil.which('google-chrome'))
     return jsonify(resp)
 
 @app.route('/api/display/register', methods=['POST'])
@@ -231,7 +247,7 @@ def register_display():
     code = generate_display_code()
     new_display = {
         "code": code,
-        "linked": False,
+        "linked": app.config.get('STANDALONE', False),
         "active_playlist_id": None,
         "last_seen": time.time()
     }
@@ -253,8 +269,14 @@ def poll_display(code_id):
     if not display.get('linked', False):
         return jsonify({"linked": False, "code": code_id})
 
-    # Resolve active playlist content
-    active_playlist = next((p for p in state['playlists'] if p['id'] == display.get('active_playlist_id')), None)
+    # Resolve active playlist content. In standalone mode there is no display
+    # assignment UI: fall back to the globally selected (or first) playlist.
+    playlist_id = display.get('active_playlist_id')
+    if app.config.get('STANDALONE', False) and not playlist_id:
+        playlist_id = state.get('standalone_playlist_id') \
+            or (state['playlists'][0]['id'] if state['playlists'] else None)
+
+    active_playlist = next((p for p in state['playlists'] if p['id'] == playlist_id), None)
     
     enriched_media = []
     if active_playlist and 'items' in active_playlist:
@@ -278,6 +300,9 @@ def poll_display(code_id):
 
 @app.route('/api/link_display', methods=['POST'])
 def link_display():
+    if app.config.get('STANDALONE', False):
+        return jsonify({"success": False,
+                        "message": "Standalone mode: displays are linked automatically."}), 403
     data = request.json or {}
     code = data.get('code', '').strip().upper()
     if not code or len(code) != 4:
@@ -293,6 +318,9 @@ def link_display():
 
 @app.route('/api/unlink_display', methods=['POST'])
 def unlink_display():
+    if app.config.get('STANDALONE', False):
+        return jsonify({"success": False,
+                        "message": "Standalone mode: display linking is disabled."}), 403
     data = request.json or {}
     code = data.get('code', '').upper()
     display = next((d for d in state['displays'] if d['code'] == code), None)
@@ -317,6 +345,20 @@ def activate_playlist():
         return jsonify({"success": True})
 
     return jsonify({"success": False, "message": "Display not found"}), 404
+
+@app.route('/api/set_active_playlist', methods=['POST'])
+def set_active_playlist():
+    """Standalone mode: choose which playlist the local player plays."""
+    if not app.config.get('STANDALONE', False):
+        return jsonify({"success": False,
+                        "message": "Only available in standalone mode."}), 403
+    data = request.json or {}
+    playlist_id = data.get('playlist_id')
+    if playlist_id and not any(p['id'] == playlist_id for p in state['playlists']):
+        return jsonify({"success": False, "message": "Playlist not found."}), 404
+    state['standalone_playlist_id'] = playlist_id
+    save_state()
+    return jsonify({"success": True})
 
 @app.route('/api/save_playlist', methods=['POST'])
 def save_playlist():
@@ -488,14 +530,28 @@ def delete_media():
     return jsonify({"success": True})
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Fossignage signage server')
+    parser.add_argument('--standalone', action='store_true',
+                        help='Standalone mode: disable display linking; '
+                             'displays register and are linked automatically')
+    args = parser.parse_args()
+
+    if args.standalone:
+        app.config['STANDALONE'] = True
+
     host = os.environ.get('SIGNAGE_HOST', '0.0.0.0')
     port = int(os.environ.get('SIGNAGE_PORT', '5000'))
     debug = os.environ.get('SIGNAGE_DEBUG', '0') == '1'
 
     print("\n-------------------------------------------------------------")
     print(" Digital Signage Server Started!")
-    print(f" - Operator Console: http://127.0.0.1:{port}/operator")
-    print(f" - Display Player:    http://127.0.0.1:{port}/display")
+    if app.config['STANDALONE']:
+        print(" Mode:              STANDALONE (display linking disabled)")
+        print(f" Upload content at: http://<this-host>:{port}/operator")
+    else:
+        print(f" - Operator Console: http://127.0.0.1:{port}/operator")
+        print(f" - Display Player:    http://127.0.0.1:{port}/display")
     print(" - Storage File:     data.json")
     print(" - Uploads Path:     static/media/")
     print("-------------------------------------------------------------\n")

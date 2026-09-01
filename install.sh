@@ -95,6 +95,16 @@ if grep -qs 'raspbian\|raspberry' /etc/os-release; then
   fi
 fi
 
+# Chromium is a memory hog - skip it on machines with < 1 GB RAM (URL/web
+# page items won't be playable there; images and video still work).
+TOTAL_MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+CHROMIUM_PKG=()
+if [[ ${TOTAL_MEM_KB:-0} -ge 1048576 ]]; then
+  CHROMIUM_PKG=(chromium)
+else
+  info "skipping chromium (< 1 GB RAM) - web page items will not be playable"
+fi
+
 if [[ $OMX_AVAILABLE -eq 1 ]]; then
   spinner "installing omxplayer (hw-accelerated video)" \
     apt-get install -y --no-install-recommends omxplayer \
@@ -111,7 +121,7 @@ spinner "installing packages"      apt-get install -y --no-install-recommends \
   feh fbi \
   imagemagick \
   fonts-dejavu-core \
-  chromium \
+  "${CHROMIUM_PKG[@]}" \
   ffmpeg \
   mpv \
   vlc \
