@@ -53,7 +53,7 @@ Playback backends, chosen automatically by availability:
 
 | Media  | Players (in order of preference)        |
 |--------|------------------------------------------|
-| Video  | omxplayer, mpv, vlc, ffplay              |
+| Video  | omxplayer, vlc, mpv, ffplay              |
 | Images | feh (X), fbi (framebuffer)               |
 | URLs   | chromium --kiosk                         |
 

@@ -12,7 +12,7 @@ Flask backend (app.py) that the browser display client uses:
 
 Playback is delegated to native processes so there is no browser overhead:
 
-  - video : omxplayer (Pi HW accel) -> mpv -> vlc -> ffplay
+  - video : omxplayer (Pi HW accel) -> vlc -> mpv -> ffplay
   - image : feh (X) -> fbi (console framebuffer)
   - url   : chromium --kiosk (optional, heavy)
 
@@ -272,24 +272,32 @@ class NativePlayer:
     def _play_video(self, url, loop):
         full_url = url if url.startswith("http") else self.server + url
         omx = find_binary("omxplayer")
-        mpv = find_binary("mpv")
         vlc = find_binary("vlc")
+        mpv = find_binary("mpv")
         ffplay = find_binary("ffplay")
         if omx:
             cmd = [omx, "--no-osd", "--blank", "-o", "both", full_url]
             if loop:
                 cmd.insert(1, "--loop")
+        elif vlc:
+            # VLC first: RPi OS builds it with mmal hardware decoding, which
+            # plays 1080p smoothly where mpv's GL pipeline (dumb-mode FBOs +
+            # drm_prime copy-back) drops frames. Deliberately minimal flags:
+            # a plain window works on bare X without a window manager (the
+            # old wallpaper mode is what used to segfault).
+            cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
+                   "--play-and-exit", "--fullscreen", full_url]
+            if loop:
+                cmd.append("--loop")
+            return self._start(cmd, wait_for_exit=True)
         elif mpv:
-            # mpv first: it handles bare X (no WM) reliably via its own
-            # fullscreen window, unlike VLC 3 which segfaults in wallpaper
-            # mode without a window manager.
+            # mpv fallback (mostly non-Pi systems): handles bare X (no WM)
+            # reliably via its own fullscreen window.
             # --vo=gpu renders through OpenGL/EGL instead of the default
             # software X11 path (falls back to x11 when GL is unavailable);
-            # --hwdec=auto enables the Pi's VideoCore decoder (mmal on
-            # Bullseye/legacy firmware, v4l2m2m on Bookworm/KMS) and falls
-            # back to software decoding when neither exists.
-            # --panscan=1.0 fills the screen (crops overflow); use it only
-            # when the video aspect matches the screen, otherwise letterbox.
+            # --hwdec=auto picks up vaapi/nvdec where present, else software.
+            # (--hwdec takes a single value, not a list, so v4l2m2m can't be
+            # chained onto auto; on Pi systems VLC above does hw decoding.)
             w, h = self._screen_size()
             cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
                    "--cursor-autohide=no",
@@ -299,26 +307,6 @@ class NativePlayer:
                    "--autofit-larger={}x{}".format(w, h),
                    "--loop-file=" + ("inf" if loop else "no"),
                    "--really-quiet", full_url]
-        elif vlc:
-            # VLC fallback. On bare X (no WM) VLC 3 cannot embed its video
-            # window normally ("parent window not available"), so we use
-            # wallpaper mode: draw the video directly onto the root window.
-            w, h = self._screen_size()
-            env = dict(os.environ,
-                       DISPLAY=os.environ.get("DISPLAY", ":0"),
-                       XDG_RUNTIME_DIR="/tmp/xdg")
-            os.makedirs("/tmp/xdg", exist_ok=True)
-            cmd = [vlc, "--intf", "dummy", "--no-osd", "--no-video-title-show",
-                   "--no-mouse-events", "--play-and-exit",
-                   "--no-autocrop", "--crop=none",
-                   "--aspect-ratio=default",
-                   "--video-wallpaper",
-                   "--autoscale",
-                   f"--width={w}", f"--height={h}"]
-            if loop:
-                cmd.append("--loop")
-            cmd.append(full_url)
-            return self._start(cmd, wait_for_exit=True, env=env)
         elif ffplay:
             cmd = [ffplay, "-noborder", "-alwaysontop", "-autoexit",
                    "-loglevel", "quiet", "-window_title", "fossignage",
