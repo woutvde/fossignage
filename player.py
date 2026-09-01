@@ -12,7 +12,7 @@ Flask backend (app.py) that the browser display client uses:
 
 Playback is delegated to native processes so there is no browser overhead:
 
-  - video : omxplayer (Pi HW accel) -> vlc -> ffplay
+  - video : omxplayer (Pi HW accel) -> mpv -> vlc -> ffplay
   - image : feh (X) -> fbi (console framebuffer)
   - url   : chromium --kiosk (optional, heavy)
 
@@ -283,11 +283,18 @@ class NativePlayer:
             # mpv first: it handles bare X (no WM) reliably via its own
             # fullscreen window, unlike VLC 3 which segfaults in wallpaper
             # mode without a window manager.
+            # --vo=gpu renders through OpenGL/EGL instead of the default
+            # software X11 path (falls back to x11 when GL is unavailable);
+            # --hwdec=auto enables the Pi's VideoCore decoder (mmal on
+            # Bullseye/legacy firmware, v4l2m2m on Bookworm/KMS) and falls
+            # back to software decoding when neither exists.
             # --panscan=1.0 fills the screen (crops overflow); use it only
             # when the video aspect matches the screen, otherwise letterbox.
             w, h = self._screen_size()
             cmd = [mpv, "--no-border", "--fullscreen", "--no-osd-bar",
                    "--cursor-autohide=no",
+                   "--vo=gpu,x11",
+                   "--hwdec=auto",
                    "--geometry={}x{}+0+0".format(w, h),
                    "--autofit-larger={}x{}".format(w, h),
                    "--loop-file=" + ("inf" if loop else "no"),
