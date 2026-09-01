@@ -184,7 +184,7 @@
             display: flex;
             gap: 10px;
             overflow-x: auto;
-            padding: 8px 4px 14px 4px;
+            padding: 8px 12px 14px 12px;
             min-height: 135px;
             align-items: center;
             background: #0f172a;
@@ -354,6 +354,83 @@
             border: 1px dashed #334155;
             border-radius: 8px;
         }
+
+        /* Upload progress */
+        .upload-progress {
+            display: none;
+            margin-top: 10px;
+            padding: 8px 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+        .upload-progress.active { display: block; }
+        .library-grid.drop-target {
+            outline: 2px dashed #38bdf8;
+            outline-offset: -2px;
+            background: rgba(56, 189, 248, 0.05);
+        }
+        .upload-progress .bar {
+            height: 6px;
+            background: #334155;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 6px;
+        }
+        .upload-progress .bar > div {
+            height: 100%;
+            width: 0%;
+            background: #38bdf8;
+            border-radius: 3px;
+            transition: width 0.2s;
+        }
+
+        /* Transcode badge on media cards */
+        .transcode-badge {
+            position: absolute;
+            bottom: 24px;
+            left: 4px;
+            z-index: 2;
+            background: rgba(245, 158, 11, 0.92);
+            color: #1e293b;
+            font-size: 9px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .transcode-progress {
+            position: absolute;
+            bottom: 24px;
+            left: 0;
+            right: 0;
+            z-index: 2;
+            height: 4px;
+            background: rgba(51, 65, 85, 0.9);
+        }
+        .transcode-progress > div {
+            height: 100%;
+            background: #f59e0b;
+            transition: width 0.5s;
+        }
+        .transcode-error {
+            position: absolute;
+            bottom: 24px;
+            left: 4px;
+            right: 4px;
+            z-index: 2;
+            background: rgba(239, 68, 68, 0.92);
+            color: white;
+            font-size: 9px;
+            padding: 2px 5px;
+            border-radius: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
     </style>
 </head>
 <body>
@@ -362,8 +439,8 @@
     <div class="top-bar">
         <h1>Digital Signage Operator Console</h1>
         <div style="font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 8px;">
-            <span class="pulse-dot"></span>
-            Backend Connected
+            <span class="pulse-dot" id="backendStatusDot"></span>
+            <span id="backendStatusText">Connecting…</span>
         </div>
     </div>
 
@@ -379,7 +456,7 @@
 
             <!-- Pair Display Form (hidden in standalone mode) -->
             <div id="pairFormRow" style="display: flex; gap: 8px;">
-                <input type="text" id="playerCodeInput" placeholder="4-Letter Code" maxlength="4" style="text-transform: uppercase; letter-spacing: 2px; font-weight: bold; font-family: monospace;">
+                <input type="text" id="playerCodeInput" placeholder="4-Letter Code" maxlength="4" style="text-transform: uppercase; letter-spacing: 2px; font-weight: bold; font-family: monospace;" onkeydown="if(event.key==='Enter')linkPlayer()">
                 <button class="btn btn-primary" onclick="linkPlayer()">Pair Screen</button>
             </div>
 
@@ -454,8 +531,14 @@
                 <!-- Add URL Row -->
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                     <input type="text" id="mediaNameInput" placeholder="Media Title (e.g. Daily Promo)" style="flex: 1; min-width: 140px;">
-                    <input type="url" id="mediaUrlInput" placeholder="https://example.com/banner.jpg" style="flex: 2; min-width: 180px;">
+                    <input type="url" id="mediaUrlInput" placeholder="https://example.com/banner.jpg" style="flex: 2; min-width: 180px;" onkeydown="if(event.key==='Enter')addUrlMedia()">
                     <button class="btn btn-primary" onclick="addUrlMedia()">Add URL</button>
+                </div>
+
+                <!-- Upload Progress -->
+                <div class="upload-progress" id="uploadProgress">
+                    <span id="uploadProgressText">Uploading...</span>
+                    <div class="bar"><div id="uploadProgressBar"></div></div>
                 </div>
 
                 <!-- Category Tabs & Search -->
@@ -470,7 +553,10 @@
                 </div>
 
                 <!-- Media Grid -->
-                <div class="library-grid" id="libraryGrid">
+                <div class="library-grid" id="libraryGrid" 
+                     ondragover="handleLibraryDragOver(event)" 
+                     ondragleave="handleLibraryDragLeave(event)" 
+                     ondrop="handleLibraryFileDrop(event)">
                     <!-- Media cards render here -->
                 </div>
             </div>
@@ -540,6 +626,7 @@
             try {
                 const res = await fetch('/api/state');
                 state = await res.json();
+                setBackendStatus(true);
 
                 if (state.standalone !== standaloneMode) {
                     standaloneMode = !!state.standalone;
@@ -596,9 +683,21 @@
                     lastMediaHash = currentMediaHash;
                     renderLibrary();
                 }
+
+                pollTranscodes();
             } catch (err) {
                 console.error('State sync error:', err);
+                setBackendStatus(false);
             }
+        }
+
+        function setBackendStatus(ok) {
+            const dot = document.getElementById('backendStatusDot');
+            const text = document.getElementById('backendStatusText');
+            if (!dot || !text) return;
+            dot.classList.toggle('offline', !ok);
+            text.innerText = ok ? 'Backend Connected' : 'Backend Disconnected';
+            text.style.color = ok ? '#34d399' : '#ef4444';
         }
 
         function detectVideoDuration(url) {
@@ -968,23 +1067,203 @@
             }
         }
 
-        async function handleFileUpload(e) {
+        /* --- FILE UPLOAD (XHR for progress + codec check) --- */
+        const uploadBox = document.getElementById('uploadProgress');
+        const uploadBar = document.getElementById('uploadProgressBar');
+        const uploadText = document.getElementById('uploadProgressText');
+
+        function setUploadProgress(pct, label) {
+            uploadBox.classList.add('active');
+            uploadBar.style.width = pct + '%';
+            if (label) uploadText.innerText = label;
+        }
+
+        function hideUpload() {
+            uploadBox.classList.remove('active');
+            uploadBar.style.width = '0%';
+        }
+
+        async function promptTranscode(media) {
+            // Warn when an uploaded video uses a codec that struggles on
+            // low-end display hardware (Pi 3 etc.) and offer to convert it.
+            const ffmpegOk = media._transcode_available !== false;
+            if (!media.needs_transcode) return;
+            const codec = (media.video_codec || 'this codec').toUpperCase();
+            const msg =
+                `"${media.name}" uses ${codec} video, which will NOT play smoothly ` +
+                `on low-end hardware (e.g. Raspberry Pi 3).\n\n` +
+                (ffmpegOk
+                    ? 'Transcode it to H.264 1080p30 now?\n'
+                      + '(Runs on the server; can take a while for long videos.)'
+                    : 'Transcoding is unavailable: ffmpeg is not installed on the server.\n'
+                      + 'Convert the file on your PC before uploading instead.');
+            if (ffmpegOk && confirm(msg)) {
+                await startTranscode(media.id);
+            }
+        }
+
+        async function startTranscode(mediaId) {
+            const res = await fetch('/api/transcode_media', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: mediaId })
+            });
+            const data = await res.json();
+            if (!data.success) alert(data.message);
+            fetchState();
+        }
+
+        /* --- OS FILE DRAG & DROP (from file browser onto the library) --- */
+        function handleLibraryDragOver(e) {
+            // Only react to actual file drags from outside the browser
+            if (![...e.dataTransfer.types].includes('Files')) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            document.getElementById('libraryGrid').classList.add('drop-target');
+        }
+
+        function handleLibraryDragLeave(e) {
+            if (e.target === document.getElementById('libraryGrid')) {
+                document.getElementById('libraryGrid').classList.remove('drop-target');
+            }
+        }
+
+        function handleLibraryFileDrop(e) {
+            const grid = document.getElementById('libraryGrid');
+            grid.classList.remove('drop-target');
+            if (![...e.dataTransfer.types].includes('Files')) return;
+            e.preventDefault();
+            const files = [...e.dataTransfer.files].filter(f =>
+                f.name.includes('.') &&
+                f.name.split('.').pop().toLowerCase() !== 'part');
+            if (files.length) uploadFiles(files);
+        }
+
+        async function uploadFiles(files) {
+            for (const file of files) {
+                await uploadOneFile(file);
+            }
+        }
+
+        function uploadOneFile(file) {
+            return new Promise((resolve) => {
+                const formData = new FormData();
+                formData.append('name', file.name.split('.')[0]);
+                formData.append('file', file);
+
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/upload_media');
+                xhr.upload.onprogress = (ev) => {
+                    if (ev.lengthComputable) {
+                        const pct = Math.round(ev.loaded / ev.total * 100);
+                        setUploadProgress(pct, `Uploading ${file.name} — ${pct}%`);
+                    }
+                };
+                xhr.onload = async () => {
+                    hideUpload();
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        if (data.success) {
+                            if (data.media) data.media._transcode_available = data.transcode_available;
+                            await fetchState();
+                            if (data.media) await promptTranscode(data.media);
+                        } else {
+                            alert(data.message || `Upload of ${file.name} failed.`);
+                        }
+                    } catch (err) {
+                        alert(`Upload of ${file.name} failed: ` + err);
+                    }
+                    resolve();
+                };
+                xhr.onerror = () => {
+                    hideUpload();
+                    alert(`Upload of ${file.name} failed: network error.`);
+                    resolve();
+                };
+                setUploadProgress(0, `Uploading ${file.name}...`);
+                xhr.send(formData);
+            });
+        }
+
+        function handleFileUpload(e) {
             const files = e.target.files;
             if (!files.length) return;
+            uploadFiles([...files]);
+            e.target.value = '';  // allow re-selecting the same file
+        }
 
-            const file = files[0];
-            const formData = new FormData();
-            formData.append('name', file.name.split('.')[0]);
-            formData.append('file', file);
+        /* --- TRANSCODE PROGRESS POLLING --- */
+        let lastTranscodeJobs = {};
+        let finishedJobTimers = {};
 
-            const res = await fetch('/api/upload_media', { method: 'POST', body: formData });
-            const data = await res.json();
+        function handleFinishedJobs(jobs) {
+            // Show success/failure for a few seconds, then drop it from the UI
+            Object.entries(jobs).forEach(([id, j]) => {
+                if (!j.running && !finishedJobTimers[id]) {
+                    finishedJobTimers[id] = setTimeout(() => {
+                        delete lastTranscodeJobs[id];
+                        delete finishedJobTimers[id];
+                        renderLibrary();
+                    }, 4000);
+                }
+            });
+        }
 
-            if (data.success) {
-                fetchState();
-            } else {
-                alert(data.message);
+        async function pollTranscodes() {
+            // Keep polling while any job is active, finishing up, or a
+            // warning badge exists on a video.
+            const relevant = state.media.filter(m =>
+                m.type === 'video' &&
+                (m.needs_transcode || lastTranscodeJobs[m.id]));
+            const ids = relevant.map(m => m.id);
+            if (!ids.length) {
+                if (Object.keys(lastTranscodeJobs).length) {
+                    lastTranscodeJobs = {}; renderLibrary();
+                }
+                return;
             }
+            try {
+                const res = await fetch('/api/transcode_status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids, ack: [] })
+                });
+                const data = await res.json();
+                const prev = JSON.stringify(lastTranscodeJobs);
+                lastTranscodeJobs = data.jobs || {};
+                if (JSON.stringify(lastTranscodeJobs) !== prev) renderLibrary();
+                handleFinishedJobs(lastTranscodeJobs);
+                // Acknowledge finished jobs so the server cleans them up.
+                const finished = Object.entries(lastTranscodeJobs)
+                    .filter(([, j]) => !j.running)
+                    .map(([id]) => id);
+                if (finished.length) {
+                    fetch('/api/transcode_status', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: [], ack: finished })
+                    });
+                }
+            } catch (err) { /* ignore transient errors */ }
+        }
+
+        function transcodeOverlayHtml(m) {
+            const job = (typeof lastTranscodeJobs !== 'undefined') ? lastTranscodeJobs[m.id] : null;
+            if (job && job.running) {
+                return `<div class="transcode-progress"><div style="width:${job.progress || 0}%"></div></div>
+                        <div class="transcode-badge" style="background:rgba(56,189,248,0.9);">TRANSCODING ${job.progress || 0}%</div>`;
+            }
+            if (job && job.error) {
+                return `<div class="transcode-error" title="${escapeHtml(job.error)}">Transcode failed: ${escapeHtml(job.error)}</div>`;
+            }
+            if (job && !job.running) {
+                return `<div class="transcode-badge" style="background:rgba(52,211,153,0.92);">TRANSCODED ✓</div>`;
+            }
+            if (m.needs_transcode) {
+                return `<div class="transcode-badge" title="${escapeHtml((m.video_codec || 'This codec').toUpperCase())} will not play smoothly on low-end hardware — click to transcode to H.264"
+                             style="cursor:pointer;" onclick="startTranscode('${escapeHtml(m.id)}')">⚠ ${escapeHtml((m.video_codec || '?').toUpperCase())}</div>`;
+            }
+            return '';
         }
 
         function renderLibrary() {
@@ -1027,7 +1306,8 @@
                 card.innerHTML = `
                     <button class="btn-delete-media" title="Delete media" onclick="deleteMedia('${escapeHtml(m.id)}')">&times;</button>
                     <div class="media-preview">${previewHtml}</div>
-                    <div class="media-title" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
+                    ${transcodeOverlayHtml(m)}
+                    <div class="media-title" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}${m.video_codec ? ' · ' + escapeHtml(m.video_codec.toUpperCase()) : ''}</div>
                 `;
 
                 grid.appendChild(card);
