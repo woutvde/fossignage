@@ -627,6 +627,7 @@
                 const res = await fetch('/api/state');
                 state = await res.json();
                 setBackendStatus(true);
+                if (state.upload_limits) uploadLimits = state.upload_limits;
 
                 if (state.standalone !== standaloneMode) {
                     standaloneMode = !!state.standalone;
@@ -1068,6 +1069,14 @@
         }
 
         /* --- FILE UPLOAD (XHR for progress + codec check) --- */
+        // Populated from the server: {max: bytes, free: bytes} — refreshed on
+        // every state poll so disk-space checks stay accurate.
+        let uploadLimits = { max: 2 * 1024 * 1024 * 1024, free: Infinity };
+
+        function fmtMB(bytes) {
+            return (bytes / 1024 / 1024).toFixed(0);
+        }
+
         const uploadBox = document.getElementById('uploadProgress');
         const uploadBar = document.getElementById('uploadProgressBar');
         const uploadText = document.getElementById('uploadProgressText');
@@ -1147,6 +1156,23 @@
 
         function uploadOneFile(file) {
             return new Promise((resolve) => {
+                // Reject oversized / too-big-for-disk files up-front; the server
+                // would return an HTML 413 page that can't be parsed as JSON.
+                const limit = uploadLimits;
+                if (file.size > limit.max) {
+                    hideUpload();
+                    alert(`"${file.name}" is too large (${fmtMB(file.size)} MB). ` +
+                          `The server accepts up to ${fmtMB(limit.max)} MB per file.`);
+                    resolve();
+                    return;
+                }
+                if (file.size > limit.free) {
+                    hideUpload();
+                    alert(`Not enough disk space on the server for "${file.name}" ` +
+                          `(${fmtMB(file.size)} MB needed, ${fmtMB(limit.free)} MB free).`);
+                    resolve();
+                    return;
+                }
                 const formData = new FormData();
                 formData.append('name', file.name.split('.')[0]);
                 formData.append('file', file);
@@ -1161,8 +1187,20 @@
                 };
                 xhr.onload = async () => {
                     hideUpload();
+                    let data;
                     try {
-                        const data = JSON.parse(xhr.responseText);
+                        data = JSON.parse(xhr.responseText);
+                    } catch (err) {
+                        // Server replied with a non-JSON error page (413, 500, ...)
+                        let why = `HTTP ${xhr.status}`;
+                        if (xhr.status === 413) {
+                            why = `file exceeds the server's ${fmtMB(uploadLimits.max)} MB limit`;
+                        }
+                        alert(`Upload of ${file.name} failed (${why}).`);
+                        resolve();
+                        return;
+                    }
+                    try {
                         if (data.success) {
                             if (data.media) data.media._transcode_available = data.transcode_available;
                             await fetchState();

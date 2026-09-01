@@ -10,7 +10,15 @@ import threading
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 
-MAX_CONTENT_LENGTH = 200 * 1024 * 1024  # 200 MB upload limit
+MAX_CONTENT_LENGTH = 2 * 1024 * 1024 * 1024  # 2 GB upload limit
+
+
+def disk_free_bytes():
+    """Free space on the media storage volume."""
+    try:
+        return shutil.disk_usage(UPLOAD_FOLDER).free
+    except OSError:
+        return None
 
 app = Flask(__name__)
 
@@ -195,11 +203,18 @@ def get_state():
             "status": "online" if is_online else "offline"
         })
 
-    return jsonify({
+    resp = {
         "displays": formatted_displays,
         "media": state['media'],
         "playlists": state['playlists']
-    })
+    }
+    # Let the operator console pre-check uploads against the server's limits
+    free = disk_free_bytes()
+    resp['upload_limits'] = {
+        "max": MAX_CONTENT_LENGTH,
+        "free": free if free is not None else float('inf'),
+    }
+    return jsonify(resp)
 
 @app.route('/api/display/register', methods=['POST'])
 def register_display():
@@ -345,6 +360,16 @@ def delete_playlist():
 def upload_media():
     name = request.form.get('name', 'Untitled')
     url = request.form.get('url', '')
+
+    # Reject uploads when the disk is nearly full — Flask streams the whole
+    # request body before we can check, so bail before writing anything.
+    free = disk_free_bytes()
+    if free is not None and free < 50 * 1024 * 1024:  # keep 50 MB headroom
+        return jsonify({
+            "success": False,
+            "message": f"Not enough disk space on the server "
+                       f"({free / 1024 / 1024:.0f} MB free)."
+        }), 507
 
     # Handle Direct File Upload
     if 'file' in request.files:
