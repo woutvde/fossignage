@@ -48,6 +48,14 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 ANIMATED_EXTS = (".gif",)  # need a video-style player to animate
 VIDEO_EXTS = (".mp4", ".webm", ".ogg", ".mov", ".mkv", ".avi")
 
+# How long a freshly launched player gets to paint its first frame before the
+# previous item's process is killed. The old item keeps rendering underneath
+# in the meantime, so queue transitions swap instantly instead of flashing
+# black while the next player starts up.
+SETTLE_IMAGE = 0.5   # feh maps its window almost immediately
+SETTLE_VIDEO = 3.0   # decoder init + first frame of a local/LAN stream
+SETTLE_URL = 6.0     # chromium cold start is the slowest
+
 
 def setup_logging(log_dir=DEFAULT_LOG_DIR):
     """Log to <log_dir>/player.log, falling back to stderr if unavailable
@@ -116,54 +124,81 @@ def find_binary(*names):
 
 
 class NativePlayer:
-    """Owns the subprocess (or timer) currently rendering an item."""
+    """Owns the subprocess (or timer) currently rendering an item.
+
+    Transitions overlap: the next item is launched while the previous one is
+    still on screen, and the old process is only retired once the new one has
+    had time to paint over it (see _swap), so there is no black gap.
+    """
 
     def __init__(self, server, standalone=False):
         self.server = server
         self.standalone = standalone
         self.proc = None          # subprocess currently on screen
+        self.proc_dir = None      # scratch dir backing it (chromium profile)
+        self.old_proc = None      # previous subprocess, dying in the background
+        self.old_dir = None
         self.timer = None         # threading.Timer for image/url durations
         self._lock = threading.Lock()
+        self._cache = {}          # url -> pre-downloaded temp file
+        self._cache_lock = threading.Lock()
+        self.on_video_end = lambda: None  # set by DisplayClient
 
     # -- lifecycle ---------------------------------------------------------
 
     def stop(self):
+        """Tear down everything on (or coming onto) screen."""
         with self._lock:
             if self.timer:
                 self.timer.cancel()
                 self.timer = None
-            if self.proc:
-                try:
-                    # Terminate the whole process group (omxplayer spawns children)
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError, OSError):
-                    try:
-                        self.proc.terminate()
-                    except OSError:
-                        pass
-                try:
-                    self.proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-                    except OSError:
-                        pass
-                self.proc = None
+            procs = [(self.proc, self.proc_dir), (self.old_proc, self.old_dir)]
+            self.proc = self.old_proc = None
+            self.proc_dir = self.old_dir = None
+        for proc, scratch_dir in procs:
+            if proc:
+                self._kill(proc)
+                self._cleanup_dir(scratch_dir)
 
-    def _start(self, cmd, wait_for_exit=False, env=None):
+    def _kill(self, proc):
+        """Terminate a player process group (omxplayer spawns children)."""
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass
+
+    def _cleanup_dir(self, path):
+        if path:
+            shutil.rmtree(path, ignore_errors=True)
+
+    def _start(self, cmd, wait_for_exit=False, env=None, scratch_dir=None):
         log("exec: " + " ".join(cmd))
         kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                       start_new_session=True)
         if env:
             kwargs["env"] = env
         try:
-            self.proc = subprocess.Popen(cmd, **kwargs)
+            proc = subprocess.Popen(cmd, **kwargs)
         except OSError as e:
             log(f"failed to launch {cmd[0]}: {e}")
-            self.proc = None
             return False
+        with self._lock:
+            self.proc = proc
+            self.proc_dir = scratch_dir
         if wait_for_exit:
-            threading.Thread(target=self._wait_video, args=(self.proc,),
+            threading.Thread(target=self._wait_video, args=(proc,),
                              daemon=True).start()
         return True
 
@@ -171,21 +206,67 @@ class NativePlayer:
         """Advance the playlist when the video process exits naturally."""
         proc.wait()
         with self._lock:
-            if self.proc is proc:  # not superseded by a stop()/new item
+            current = self.proc is proc  # not superseded by a stop()/new item
+            if current:
                 self.proc = None
         # If the player died almost instantly it failed to play the file
         # (bad flag, unsupported format, no X connection...). Log it loudly
         # and advance anyway so one broken item can't stall the playlist.
         if proc.returncode not in (0, None):
             log(f"player exited with code {proc.returncode}")
-        self.on_video_end()
+        if current:
+            # A killed process was already replaced on purpose; advancing here
+            # too would skip straight past the item that was just started.
+            self.on_video_end()
+
+    def _swap(self, cmd, settle, wait_for_exit=False, env=None, scratch_dir=None):
+        """Start the next item while the current one is still on screen, then
+        retire the old process once the new one has had a moment to paint.
+        This keeps queue transitions gap-free instead of flashing black."""
+        with self._lock:
+            old, old_dir = self.proc, self.proc_dir
+            stale = self.old_proc
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+            self.proc = self.proc_dir = None
+            self.old_proc, self.old_dir = old, old_dir
+        if stale is not None:
+            self._kill(stale)  # superseded swap; don't leak it on screen
+        if not self._start(cmd, wait_for_exit=wait_for_exit, env=env,
+                           scratch_dir=scratch_dir):
+            self.stop()
+            self.on_video_end()
+            return False
+        if old is not None:
+            threading.Thread(target=self._retire, args=(old, old_dir, settle),
+                             daemon=True).start()
+        return True
+
+    def _retire(self, proc, scratch_dir, settle):
+        """Wait for the new item to paint, then take the old one off screen."""
+        deadline = time.time() + settle
+        while time.time() < deadline:
+            with self._lock:
+                cur = self.proc
+            if cur is not None and cur.poll() is not None:
+                break  # new item already died; stop covering for it
+            time.sleep(0.05)
+        self._kill(proc)
+        self._cleanup_dir(scratch_dir)
+
+    def _arm_timer(self, duration):
+        self.timer = threading.Timer(duration, self.on_video_end)
+        self.timer.daemon = True
+        self.timer.start()
 
     # -- rendering ---------------------------------------------------------
 
     def show_idle(self, code):
         """Full-screen status card: pairing code, or server address in
         standalone mode."""
-        self.stop()
+        # Render the card before stopping the current item so the swap to
+        # idle doesn't sit on a black screen while ImageMagick runs.
         if self.standalone:
             # Replace loopback with the machine's LAN IP so the address is
             # actually usable from another computer.
@@ -200,6 +281,7 @@ class NativePlayer:
             img = self._render_idle_image(None, display_addr)
         else:
             img = self._render_idle_image(code)
+        self.stop()
         if not img:
             if self.standalone:
                 log(f"idle: waiting for content (server {self.server})")
@@ -212,13 +294,8 @@ class NativePlayer:
             self._start([feh, "-F", "-Z", "-Y", "--hide-pointer", img])
         elif fbi:
             env = dict(os.environ, TTY="/dev/tty1")
-            try:
-                self.proc = subprocess.Popen(
-                    [fbi, "-T", "1", "-d", "/dev/fb0", "-noverbose", "-a", img],
-                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=True)
-            except OSError:
-                self.proc = None
+            self._start([fbi, "-T", "1", "-d", "/dev/fb0", "-noverbose", "-a", img],
+                        env=env)
         else:
             log(f"idle (no image viewer found): code {code}")
 
@@ -258,7 +335,9 @@ class NativePlayer:
         url = item.get("url", "")
         mtype = item.get("type", "")
         duration = int(item.get("duration") or 8)
-        self.stop()
+        # No stop() here: the next item is launched while this one is still on
+        # screen and the old process is retired once the new one has painted
+        # (see _swap), so there is no black gap between queue items.
 
         if mtype == "video" or url.lower().endswith(VIDEO_EXTS + ANIMATED_EXTS):
             # Animated GIFs go through the video path too: feh/fbi only show
@@ -276,7 +355,10 @@ class NativePlayer:
         mpv = find_binary("mpv")
         ffplay = find_binary("ffplay")
         if omx:
-            cmd = [omx, "--no-osd", "--blank", "-o", "both", full_url]
+            # No --blank: it blacks the screen during startup, which defeats
+            # the overlap swap (the previous item must stay visible until the
+            # first frame is decoded).
+            cmd = [omx, "--no-osd", "-o", "both", full_url]
             if loop:
                 cmd.insert(1, "--loop")
         elif vlc:
@@ -289,7 +371,7 @@ class NativePlayer:
                    "--play-and-exit", "--fullscreen", full_url]
             if loop:
                 cmd.append("--loop")
-            return self._start(cmd, wait_for_exit=True)
+            return self._swap(cmd, SETTLE_VIDEO, wait_for_exit=True)
         elif mpv:
             # mpv fallback (mostly non-Pi systems): handles bare X (no WM)
             # reliably via its own fullscreen window.
@@ -319,9 +401,11 @@ class NativePlayer:
             log("no video player found (install omxplayer, vlc or ffmpeg)")
             self.on_video_end()
             return
-        self._start(cmd, wait_for_exit=True)
+        self._swap(cmd, SETTLE_VIDEO, wait_for_exit=True)
 
     def _show_image(self, url, duration):
+        # Downloaded while the previous item is still on screen (or served
+        # from the prefetch cache) so launching the viewer is the only wait.
         local = self._ensure_local(url)
         if not local:
             self.on_video_end()
@@ -329,17 +413,23 @@ class NativePlayer:
         feh = find_binary("feh")
         fbi = find_binary("fbi")
         if feh:
-            ok = self._start([feh, "-F", "-Z", "-Y", "--hide-pointer", local])
+            if self._swap([feh, "-F", "-Z", "-Y", "--hide-pointer", local],
+                          SETTLE_IMAGE):
+                self._arm_timer(duration)
         elif fbi:
-            ok = self._start([fbi, "-T", "1", "-d", "/dev/fb0", "-noverbose",
-                              "-a", local])
+            # fbi owns the console tty: starting the next instance before the
+            # old one exits would let the dying one clobber the framebuffer,
+            # so stop-then-start here (the download above already removed the
+            # slow part of the gap).
+            self.stop()
+            if self._start([fbi, "-T", "1", "-d", "/dev/fb0", "-noverbose",
+                            "-a", local]):
+                self._arm_timer(duration)
+            else:
+                self.on_video_end()
         else:
             log("no image viewer found (install feh or fbi)")
-            ok = False
-        if ok:
-            self.timer = threading.Timer(duration, self.on_video_end)
-            self.timer.daemon = True
-            self.timer.start()
+            self.on_video_end()
 
     def _show_url(self, url, duration):
         chromium = find_binary("chromium", "chromium-browser", "google-chrome")
@@ -351,15 +441,19 @@ class NativePlayer:
         # XRANDR/WM hints; with a bare X (no WM) chromium can open windowed.
         # Query the real geometry and force it with --window-size instead.
         w, h = self._screen_size()
+        # Fresh profile dir per instance: with the overlap swap two kiosk
+        # instances can be alive briefly, and chromium's single-instance
+        # profile lock would make the new one defer to the dying one. The
+        # retired instance's dir is removed in _retire.
+        data_dir = tempfile.mkdtemp(prefix="fossignage-chrome-")
         cmd = [chromium, "--kiosk", "--noerrdialogs", "--disable-infobars",
                "--disable-session-crashed-bubble", "--no-first-run",
                f"--window-size={w},{h}", "--window-position=0,0",
                "--disable-gpu" if not find_binary("omxplayer") else "--enable-gpu-rasterization",
-               "--check-for-update-interval=31536000", url]
-        if self._start(cmd):
-            self.timer = threading.Timer(duration, self.on_video_end)
-            self.timer.daemon = True
-            self.timer.start()
+               "--check-for-update-interval=31536000",
+               "--user-data-dir=" + data_dir, url]
+        if self._swap(cmd, SETTLE_URL, scratch_dir=data_dir):
+            self._arm_timer(duration)
 
     def _screen_size(self):
         """Actual display resolution via xrandr/xdpyr, with sane fallbacks."""
@@ -388,21 +482,53 @@ class NativePlayer:
         return 1920, 1080
 
     def _ensure_local(self, url):
-        """Download server-hosted media to a temp file so viewers can read it."""
+        """Download server-hosted media to a temp file so viewers can read it.
+        Results are cached per URL so pre-fetched items swap in instantly."""
+        with self._cache_lock:
+            cached = self._cache.get(url)
+        if cached and os.path.exists(cached):
+            return cached
         if url.startswith("http"):
             full_url = url
         else:
             full_url = self.server + url
+        path = None
         try:
             ext = os.path.splitext(full_url.split("?")[0])[1] or ".img"
             fd, path = tempfile.mkstemp(suffix=ext, prefix="fossignage_")
             os.close(fd)
             with urllib.request.urlopen(full_url, timeout=15) as resp, open(path, "wb") as f:
                 f.write(resp.read())
-            return path
         except (urllib.error.URLError, OSError) as e:
             log(f"failed to download {full_url}: {e}")
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
             return None
+        with self._cache_lock:
+            self._cache[url] = path
+        return path
+
+    def prefetch(self, url):
+        """Pre-download an image in the background so the transition from the
+        current item (typically a video, whose window is already gone by the
+        time we advance) can start without a network wait."""
+        threading.Thread(target=self._ensure_local, args=(url,),
+                         daemon=True).start()
+
+    def clear_image_cache(self):
+        """Drop cached downloads (the playlist changed; replaced media must
+        not be served stale from the cache)."""
+        with self._cache_lock:
+            paths = list(self._cache.values())
+            self._cache.clear()
+        for path in paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 
@@ -490,6 +616,7 @@ class DisplayClient:
             self.signature = sig
             self.items = media
             self.index = 0
+            self.player.clear_image_cache()
             self._play_current()
         elif self.state != "playing":
             # Same playlist as before but playback was interrupted (e.g. reboot)
@@ -499,11 +626,8 @@ class DisplayClient:
         if new_state == self.state:
             return
         self.state = new_state
-        if new_state == "idle":
-            self.player.stop()
-            self.player.show_idle(self.code or "----")
-        elif new_state == "ready":
-            self.player.stop()
+        if new_state in ("idle", "ready"):
+            # show_idle renders the card before stopping the old item
             self.player.show_idle(self.code or "----")
         self.signature = None if new_state != "playing" else self.signature
 
@@ -518,6 +642,17 @@ class DisplayClient:
             f"{item.get('name')} ({item.get('type')})")
         self.state = "playing"
         self.player.show_item(item, single)
+        self._prefetch_next()
+
+    def _prefetch_next(self):
+        """Download the next image in the background while the current item
+        plays, so the transition when a video ends is instant."""
+        if len(self.items) < 2:
+            return
+        nxt = self.items[(self.index + 1) % len(self.items)]
+        url = nxt.get("url", "")
+        if url.lower().endswith(IMAGE_EXTS):
+            self.player.prefetch(url)
 
     def advance(self):
         """Called when the current item finishes (video end / image timer)."""
