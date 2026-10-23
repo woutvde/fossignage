@@ -142,6 +142,7 @@ class NativePlayer:
         self._lock = threading.Lock()
         self._cache = {}          # url -> pre-downloaded temp file
         self._cache_lock = threading.Lock()
+        self._backdrop = None     # (path, mtime) currently painted on the root
         self.on_video_end = lambda: None  # set by DisplayClient
 
     # -- lifecycle ---------------------------------------------------------
@@ -291,6 +292,7 @@ class NativePlayer:
         feh = find_binary("feh")
         fbi = find_binary("fbi")
         if feh:
+            self._set_backdrop(img)
             self._start([feh, "-F", "-Z", "-Y", "--hide-pointer", img])
         elif fbi:
             env = dict(os.environ, TTY="/dev/tty1")
@@ -413,6 +415,11 @@ class NativePlayer:
         feh = find_binary("feh")
         fbi = find_binary("fbi")
         if feh:
+            # Paint the new image onto the X root before touching any window:
+            # the viewer window is only a cover. If it is slow to map (or the
+            # previous window exits before it does) the exposed root already
+            # shows the new image instead of the bare black X background.
+            self._set_backdrop(local)
             if self._swap([feh, "-F", "-Z", "-Y", "--hide-pointer", local],
                           SETTLE_IMAGE):
                 self._arm_timer(duration)
@@ -512,11 +519,39 @@ class NativePlayer:
         return path
 
     def prefetch(self, url):
-        """Pre-download an image in the background so the transition from the
-        current item (typically a video, whose window is already gone by the
-        time we advance) can start without a network wait."""
-        threading.Thread(target=self._ensure_local, args=(url,),
-                         daemon=True).start()
+        """Download the next image and paint it onto the X root while the
+        current item still covers the screen. Whatever gets exposed during
+        the swap then already shows the new image, so the transition is a
+        straight cut. This also covers video -> image, where the video window
+        is already gone by the time we advance."""
+        def _stage():
+            local = self._ensure_local(url)
+            if local:
+                self._set_backdrop(local)
+        threading.Thread(target=_stage, daemon=True).start()
+
+    def _set_backdrop(self, image_path):
+        """Set the X root window's background to an image (via feh) so a gap
+        between viewer windows never exposes the black root and its cursor."""
+        try:
+            stamp = os.path.getmtime(image_path)
+        except OSError:
+            stamp = None
+        with self._lock:
+            if self._backdrop == (image_path, stamp):
+                return
+        feh = find_binary("feh")
+        if not feh:
+            return
+        try:
+            subprocess.run([feh, "--no-fehbg", "--bg-fill", image_path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=10, check=True)
+        except (subprocess.SubprocessError, OSError) as e:
+            log(f"could not set backdrop from {image_path}: {e}")
+            return
+        with self._lock:
+            self._backdrop = (image_path, stamp)
 
     def clear_image_cache(self):
         """Drop cached downloads (the playlist changed; replaced media must
@@ -645,8 +680,8 @@ class DisplayClient:
         self._prefetch_next()
 
     def _prefetch_next(self):
-        """Download the next image in the background while the current item
-        plays, so the transition when a video ends is instant."""
+        """Download and stage the next image in the background while the
+        current item plays, so the transition to it is instant."""
         if len(self.items) < 2:
             return
         nxt = self.items[(self.index + 1) % len(self.items)]
