@@ -62,7 +62,15 @@ def load_state():
                 state["standalone_playlist_id"] = loaded.get("standalone_playlist_id")
                 print(f"[STORAGE] State loaded successfully from {DATA_FILE}")
         except Exception as e:
-            print(f"[STORAGE] Error loading data.json: {e}")
+            # Never overwrite the unreadable file: preserve it as a backup so
+            # the data can be recovered by hand, then start from empty state.
+            backup = f"{DATA_FILE}.corrupt-{int(time.time())}"
+            print(f"[STORAGE] Error loading {DATA_FILE}: {e}")
+            print(f"[STORAGE] Preserving unreadable file as {backup}")
+            try:
+                os.replace(DATA_FILE, backup)
+            except OSError as e2:
+                print(f"[STORAGE] Could not back up corrupt file: {e2}")
             save_state()
     else:
         save_state()
@@ -146,6 +154,8 @@ def _run_transcode(media_id, src_path, dst_path):
             if line.startswith('out_time_ms=') and total:
                 done = float(line.split('=', 1)[1]) / 1_000_000
                 job['progress'] = min(99, int(done / total * 100))
+        if proc.stdout:
+            proc.stdout.close()
         rc = proc.wait(timeout=7200)
         if rc != 0:
             job['error'] = f'ffmpeg exited with code {rc}'
@@ -153,12 +163,19 @@ def _run_transcode(media_id, src_path, dst_path):
                 os.remove(dst_path)
             return
         job['progress'] = 100
-        os.replace(dst_path, src_path)  # replace original with transcoded file
         m = next((m for m in state['media'] if m['id'] == media_id), None)
-        if m:
-            info = probe_video(src_path)
-            m['needs_transcode'] = bool(info and info['codec'] not in GOOD_VIDEO_CODECS)
-            save_state()
+        if not m:
+            # The media was deleted while the transcode was running; discard
+            # the output instead of resurrecting the file on disk.
+            if os.path.exists(dst_path):
+                os.remove(dst_path)
+            return
+        os.replace(dst_path, src_path)  # replace original with transcoded file
+        info = probe_video(src_path)
+        if info:
+            m['video_codec'] = info['codec']
+        m['needs_transcode'] = bool(info and info['codec'] not in GOOD_VIDEO_CODECS)
+        save_state()
     except (subprocess.TimeoutExpired, OSError, ValueError) as e:
         job['error'] = str(e)
         if os.path.exists(dst_path):
@@ -515,11 +532,14 @@ def delete_media():
         # Guard against path traversal
         if filename and '/' not in filename and '\\' not in filename:
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    print(f"[STORAGE] Error deleting file {filename}: {e}")
+            # Also remove a leftover transcode output so a job that is still
+            # running cannot resurrect the deleted file when it finishes.
+            for path in (file_path, file_path + '.transcoding.mp4'):
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception as e:
+                        print(f"[STORAGE] Error deleting file {filename}: {e}")
 
     state['media'] = [m for m in state['media'] if m['id'] != media_id]
 

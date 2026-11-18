@@ -1396,7 +1396,7 @@
             const select = document.getElementById('playlistSelect');
             select.innerHTML = '<option value="new" ' + (activePlaylistId === 'new' ? 'selected' : '') + '>+ Create New Playlist</option>' +
                 state.playlists.map(p => `
-                    <option value="${p.id}" ${p.id === activePlaylistId ? 'selected' : ''}>${p.name}</option>
+                    <option value="${escapeHtml(p.id)}" ${p.id === activePlaylistId ? 'selected' : ''}>${escapeHtml(p.name)}</option>
                 `).join('');
         }
 
