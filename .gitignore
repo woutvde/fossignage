@@ -3,3 +3,6 @@ data.json
 data.json.corrupt-*
 __pycache__/
 *.pyc
+
+# Rust player build artifacts
+/player-rs/target/

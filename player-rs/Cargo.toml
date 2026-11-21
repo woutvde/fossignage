@@ -1,0 +1,29 @@
+[package]
+name = "fossignage-player"
+version = "0.1.0"
+edition = "2021"
+description = "Native (no external player processes) signage display player for fossignage"
+license = "MIT"
+
+[lib]
+name = "fossignage_player"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fossignage-player"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+drm-sys = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+edgefirst-v4l2 = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

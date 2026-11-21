@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install python deps
+        run: pip install -r requirements.txt
+      - name: Flask backend tests
+        run: python3 -m unittest discover -s tests -t . -v
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format check
+        run: cargo fmt --check --manifest-path player-rs/Cargo.toml
+      - name: Clippy
+        run: cargo clippy --all-targets --manifest-path player-rs/Cargo.toml -- -D warnings
+      - name: Unit + integration tests (mock backend, headless display)
+        run: cargo test --manifest-path player-rs/Cargo.toml
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install python deps
+        run: pip install -r requirements.txt
+      - name: Build native player
+        run: cargo build --release --manifest-path player-rs/Cargo.toml
+      - name: E2E - real Flask backend + native player (loopback, headless)
+        run: python3 tests/e2e_player_rs.py
